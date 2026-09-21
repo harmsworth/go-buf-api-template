@@ -3,7 +3,8 @@
 .vscode/
 *.swp
 *.swo
-.trae/
+.trae/*
+!.trae/rules/
 
 # OS
 .DS_Store
