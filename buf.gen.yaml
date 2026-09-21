@@ -1,0 +1,23 @@
+# 代码生成配置：remote plugins 版本由 BSR 锁定，本地与 CI 无需安装 protoc / Go 插件。
+# 注意：remote 插件引用必须显式固定版本号（<name>:<version>），未固定版本会被 buf 拒绝。
+# 详见 docs/SCHEMA_FIRST_GUIDE.md §4.2（此配置已实测通过）。
+version: v2
+clean: true                              # 每次生成前清理 out 目录，杜绝陈旧产物
+plugins:
+  # Proto 消息 → Go 结构体（optional 标量 → 指针字段）
+  - remote: buf.build/protocolbuffers/go:v1.36.12
+    out: gen/go
+    opt: paths=source_relative
+  # gRPC Service Stub
+  - remote: buf.build/grpc/go:v1.6.2
+    out: gen/go
+    opt: paths=source_relative
+  # REST Gateway（依赖 google.api.http 注解）
+  - remote: buf.build/grpc-ecosystem/gateway:v2.30.0
+    out: gen/go
+    opt:
+      - paths=source_relative
+      - generate_unbound_methods=false
+  # OpenAPI v3——前端/网关契约交付物
+  - remote: buf.build/grpc-ecosystem/openapiv3:v2.30.0
+    out: gen/openapi

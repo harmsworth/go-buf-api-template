@@ -1,0 +1,413 @@
+// =============================================================================
+// 用户与通用资源管理 — 核心接口契约 Demo
+//
+// Schema-First / IDL-First：本文件是用户域接口的唯一事实来源（SSOT）。
+//   - 研发流程与规范 .......... ../../docs/SCHEMA_FIRST_GUIDE.md
+//   - Handler 层实现范式 ...... ../../docs/EXAMPLES.md
+//
+// 规范要点（本文件全部满足，可作模板复制）：
+//   1. package 与目录强一致        user.v1 ↔ proto/user/v1/  (PACKAGE_DIRECTORY_MATCH)
+//   2. Service / RPC / 消息命名    STANDARD 规则集自动强制
+//   3. 入参校验全部声明在契约      buf.validate 标准规则 + CEL
+//   4. PATCH 三态字段显式 optional  (Absent / Explicit Value / Explicit Clear)
+//   5. 支持"显式清空"的字段禁用 min_len/email，改用放行空串的 pattern
+// =============================================================================
+
+syntax = "proto3";
+
+package user.v1;
+
+import "buf/validate/validate.proto";
+import "google/api/annotations.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/yourorg/new-td/gen/go/user/v1;userv1"; // TODO: 替换为实际模块路径
+option java_multiple_files = true;
+option java_package = "com.yourorg.newtd.user.v1";
+
+// -----------------------------------------------------------------------------
+// 枚举
+// 规范：首值必须为 *_UNSPECIFIED = 0（ENUM_ZERO_VALUE_SUFFIX / ENUM_VALUE_PREFIX）
+// -----------------------------------------------------------------------------
+
+// 用户账号状态。
+enum UserStatus {
+  // 未指定：仅在"未设置/不过滤"语义下合法，禁止作为真实业务态写入存储。
+  USER_STATUS_UNSPECIFIED = 0;
+  // 正常。
+  USER_STATUS_ACTIVE = 1;
+  // 已停用（管理员操作）。
+  USER_STATUS_INACTIVE = 2;
+  // 已锁定（风控/连续失败）。
+  USER_STATUS_LOCKED = 3;
+}
+
+// 全局角色。
+enum UserRole {
+  USER_ROLE_UNSPECIFIED = 0;
+  USER_ROLE_ADMIN = 1;
+  USER_ROLE_EDITOR = 2;
+  USER_ROLE_VIEWER = 3;
+}
+
+// -----------------------------------------------------------------------------
+// 资源消息
+// -----------------------------------------------------------------------------
+
+// 用户资源。服务端返回体；服务端负责 user_id/username 唯一性与审计字段的填充。
+message User {
+  // 全局唯一 ID（UUID v4），服务端生成。
+  string user_id = 1 [(buf.validate.field).string.uuid = true];
+
+  // 登录名：字母开头，3~32 位字母/数字/下划线。唯一性由服务端保证。
+  string username = 2 [
+    (buf.validate.field).string.pattern = "^[a-zA-Z][a-zA-Z0-9_]{2,31}$",
+    (buf.validate.field).string.example = "alice"
+  ];
+
+  // 邮箱。
+  string email = 3 [
+    (buf.validate.field).string.email = true,
+    (buf.validate.field).string.max_len = 254
+  ];
+
+  // 展示昵称。optional：业务允许"未设置"状态，与空串严格区分（Zero Value Trap，见规范 §5）。
+  optional string nickname = 4 [
+    (buf.validate.field).string.min_len = 2,
+    (buf.validate.field).string.max_len = 32
+  ];
+
+  // 账号状态。optional：查询/过滤等场景"未设置"= 不过滤。
+  optional UserStatus status = 5 [(buf.validate.field).enum.defined_only = true];
+
+  // 全局角色，去重，至多 10 个。
+  repeated UserRole roles = 6 [
+    (buf.validate.field).repeated.max_items = 10,
+    (buf.validate.field).repeated.unique = true,
+    (buf.validate.field).repeated.items.enum.defined_only = true
+  ];
+
+  // 审计字段，服务端填充。
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+
+  // ---- 资料与安全字段（编号追加，声明顺序即编号顺序）----
+
+  // 手机号：中国大陆格式。optional：可能未绑定。
+  optional string phone = 9 [
+    (buf.validate.field).string.pattern = "^(|1[3-9][0-9]{9})$",
+    (buf.validate.field).string.example = "13800138000"
+  ];
+
+  // 头像 URL。optional：未设置 = 无头像。
+  optional string avatar_url = 10 [
+    (buf.validate.field).string.pattern = "^(|https?://\\S+)$",
+    (buf.validate.field).string.max_len = 2048
+  ];
+
+  // 密码哈希（bcrypt，60 字符）。服务端独占字段：仅用于登录校验与存储。
+  // 严禁通过任何 API 响应下发 —— toProto 映射时必须显式置空（见 EXAMPLES.md §5）。
+  string password_hash = 11 [(buf.validate.field).string.max_len = 72];
+
+  // 最后登录时间。optional：从未登录 = 未设置（Zero Value Trap 语义，见规范 §5）。
+  optional google.protobuf.Timestamp last_login_at = 12;
+
+  // 最后登录 IP（IPv4/IPv6）。optional：从未登录 = 未设置。
+  optional string last_login_ip = 13 [(buf.validate.field).string.ip = true];
+
+  // 删除时间（软删除）。optional：未删除 = 未设置；非空即表示已删除，与 DeleteUser 呼应。
+  optional google.protobuf.Timestamp deleted_at = 14;
+}
+
+// -----------------------------------------------------------------------------
+// 认证：登录
+// -----------------------------------------------------------------------------
+
+message LoginRequest {
+  // 登录名（扩展：如需邮箱登录，另建 LoginByEmailRequest，勿复用消息）。
+  string username = 1 [(buf.validate.field).string.pattern = "^[a-zA-Z][a-zA-Z0-9_]{2,31}$"];
+
+  // 明文密码仅存在于 TLS 通道内；长度遵循 OWASP 建议 [8, 72]（bcrypt 截断上限 72 字节）。
+  string password = 2 [
+    (buf.validate.field).string.min_len = 8,
+    (buf.validate.field).string.max_len = 72
+  ];
+}
+
+message LoginResponse {
+  // JWT / 不透明令牌。
+  string access_token = 1 [(buf.validate.field).string.min_len = 1];
+  // 刷新令牌， rotation 策略由认证模块定义。
+  string refresh_token = 2 [(buf.validate.field).string.min_len = 1];
+  // access token 过期时间（服务端时钟）。
+  google.protobuf.Timestamp access_token_expires_at = 3;
+  // 登录成功后的用户资源快照。
+  User user = 4;
+  // 令牌类型（OAuth2 惯例），服务端固定返回 "Bearer"。
+  string token_type = 5 [(buf.validate.field).string.min_len = 1];
+}
+
+// -----------------------------------------------------------------------------
+// 创建：CreateUser
+// -----------------------------------------------------------------------------
+
+message CreateUserRequest {
+  // 跨字段校验示例：密码复杂度用 CEL 表达（RE2 不支持 lookaround，见规范 §5.3）。
+  option (buf.validate.message).cel = {
+    id: "create_user.password_complexity"
+    message: "password must contain at least one lower case, one upper case and one digit"
+    expression: "this.password.matches('[a-z]') && this.password.matches('[A-Z]') && this.password.matches('[0-9]')"
+  };
+
+  // 登录名，唯一性由服务端保证（重复 → AlreadyExists）。
+  string username = 1 [
+    (buf.validate.field).string.pattern = "^[a-zA-Z][a-zA-Z0-9_]{2,31}$",
+    (buf.validate.field).string.example = "alice"
+  ];
+
+  // 邮箱，唯一性由服务端保证。
+  string email = 2 [
+    (buf.validate.field).string.email = true,
+    (buf.validate.field).string.max_len = 254
+  ];
+
+  // 初始密码。复杂度见上方 message 级 CEL 规则。
+  string password = 3 [
+    (buf.validate.field).string.min_len = 8,
+    (buf.validate.field).string.max_len = 72
+  ];
+
+  // 昵称可缺省（optional 三态字段：未设置 ≠ 空串）。
+  optional string nickname = 4 [
+    (buf.validate.field).string.min_len = 2,
+    (buf.validate.field).string.max_len = 32
+  ];
+
+  // 初始角色，创建时必须显式指定。
+  UserRole role = 5 [(buf.validate.field).enum.defined_only = true];
+
+  // 手机号，创建时可缺省（与 User.phone 校验规则一致），后续可用 UpdateUser 修改。
+  optional string phone = 6 [(buf.validate.field).string.pattern = "^(|1[3-9][0-9]{9})$"];
+}
+
+message CreateUserResponse {
+  // 创建成功的资源快照。
+  User user = 1 [(buf.validate.field).required = true];
+}
+
+// -----------------------------------------------------------------------------
+// 密码管理：ChangePassword（本人）/ ResetPassword（管理员）
+//
+// 为什么不是 UpdateUser 的一个字段：密码修改必须校验旧密码（本人）或走管理员
+// 重置流程（下发一次性临时密码），属于"自定义方法"（AIP-136），无法用标准
+// PATCH 三态语义表达；且 password_hash 是服务端独占字段，禁止任何请求直接写入。
+// -----------------------------------------------------------------------------
+
+message ChangePasswordRequest {
+  // 跨字段校验：新密码复杂度与 CreateUserRequest 的规则保持一致，修改时两处同步。
+  option (buf.validate.message).cel = {
+    id: "change_password.new_password_complexity"
+    message: "new password must contain at least one lower case, one upper case and one digit"
+    expression: "this.new_password.matches('[a-z]') && this.new_password.matches('[A-Z]') && this.new_password.matches('[0-9]')"
+  };
+
+  // 目标用户（必须与认证令牌的主体一致，由授权层强制）。
+  string user_id = 1 [(buf.validate.field).string.uuid = true];
+
+  // 旧密码：身份二次确认。校验失败 → FailedPrecondition；尝试次数由服务端限流。
+  string old_password = 2 [
+    (buf.validate.field).string.min_len = 8,
+    (buf.validate.field).string.max_len = 72
+  ];
+
+  // 新密码：不得与旧密码相同（服务端校验）；复杂度见上方 CEL 规则。
+  string new_password = 3 [
+    (buf.validate.field).string.min_len = 8,
+    (buf.validate.field).string.max_len = 72
+  ];
+}
+
+message ChangePasswordResponse {
+  // 密码更新时间（服务端时钟）。服务端应同时吊销该用户其他会话的刷新令牌。
+  google.protobuf.Timestamp password_changed_at = 1;
+}
+
+message ResetPasswordRequest {
+  // 目标用户（管理员操作，无需旧密码）。
+  string user_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+message ResetPasswordResponse {
+  // 服务端生成的一次性临时密码，仅本次响应返回，不落明文日志；
+  // 用户首次登录必须修改密码（服务端标记强制改密状态）。
+  string temporary_password = 1 [
+    (buf.validate.field).string.min_len = 8,
+    (buf.validate.field).string.max_len = 72
+  ];
+}
+
+// -----------------------------------------------------------------------------
+// 读取：GetUser / ListUsers
+// -----------------------------------------------------------------------------
+
+message GetUserRequest {
+  string user_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+message GetUserResponse {
+  User user = 1 [(buf.validate.field).required = true];
+}
+
+message ListUsersRequest {
+  // 分页大小：三态。未设置（Absent）= 服务端取默认值（如 20）；显式传值 = 精确控制，[1, 100]。
+  optional int32 page_size = 1 [
+    (buf.validate.field).int32.gte = 1,
+    (buf.validate.field).int32.lte = 100
+  ];
+
+  // 分页游标：首页传空串；取上一次响应的 next_page_token。
+  string page_token = 2 [(buf.validate.field).string.pattern = "^[A-Za-z0-9_-]*$"];
+
+  // 状态过滤。optional：未设置 = 不过滤（Absent），显式传值 = 精确过滤。
+  optional UserStatus status = 3 [(buf.validate.field).enum.defined_only = true];
+
+  // 关键字：对 username / nickname 做模糊匹配。
+  optional string keyword = 4 [(buf.validate.field).string.max_len = 64];
+
+  // 是否包含已删除用户（软删除，User.deleted_at 非空）。
+  // 默认（未设置/false）= 排除已删除；置 true = 包含，仅管理员/审计场景使用。
+  optional bool show_deleted = 5;
+}
+
+message ListUsersResponse {
+  repeated User users = 1;
+  // 下一页游标；空串表示没有更多数据。
+  string next_page_token = 2 [(buf.validate.field).string.pattern = "^[A-Za-z0-9_-]*$"];
+}
+
+// -----------------------------------------------------------------------------
+// 更新：UpdateUser —— PATCH 三态契约（规范 §5.3，Go 实现见 EXAMPLES.md §5）
+//
+//   ┌────────────────────────┬──────────────────────────┬────────────────────┐
+//   │ 状态                    │ 请求表现                  │ 服务端行为          │
+//   ├────────────────────────┼──────────────────────────┼────────────────────┤
+//   │ Absent（未传递）        │ 字段缺失（Go: nil）       │ 保持不变            │
+//   │ Explicit Value          │ 传有效值                  │ 更新为该值          │
+//   │ Explicit Clear（清空）  │ 传零值/空串（Go: 非nil""）│ 清空该字段          │
+//   └────────────────────────┴──────────────────────────┴────────────────────┘
+//
+// 铁律：支持显式清空的 optional 字段【禁止】min_len / email 等拒绝空串的规则，
+//       必须使用"放行空串"的 pattern（见 nickname / phone / avatar_url）。
+// -----------------------------------------------------------------------------
+
+message UpdateUserRequest {
+  // 目标用户。
+  string user_id = 1 [(buf.validate.field).string.uuid = true];
+
+  // 昵称：三态。空串 = 显式清空；非空 = 2~32 位任意字符。
+  optional string nickname = 2 [(buf.validate.field).string.pattern = "^(|.{2,32})$"];
+
+  // 手机号：三态。空串 = 显式清空；非空必须为中国大陆手机号。
+  optional string phone = 3 [
+    (buf.validate.field).string.pattern = "^(|1[3-9][0-9]{9})$",
+    (buf.validate.field).string.example = "13800138000"
+  ];
+
+  // 头像：三态。空串 = 显式清空；非空必须为 http(s) URL。
+  // 长度上限由 max_len 承担（RE2 重复计数上限为 1000，{1,2048} 无法编译）。
+  optional string avatar_url = 4 [
+    (buf.validate.field).string.pattern = "^(|https?://\\S+)$",
+    (buf.validate.field).string.max_len = 2048
+  ];
+
+  // 状态：仅两态（Absent = 不变 / 显式传值 = 变更）。
+  // 枚举无法表达"清空"，若需恢复默认请显式传 USER_STATUS_INACTIVE 等业务态（规范 §5.3 铁律 3）。
+  optional UserStatus status = 5 [(buf.validate.field).enum.defined_only = true];
+
+  // ---- 方案 B（可选启用）：FieldMask 白名单更新（AIP-134，规范 §5.5）----
+  // 若设置 update_mask，则语义切换为：仅更新 mask 声明的路径；
+  // optional 字段退化为两态（present = 更新 / absent = 不动），显式清空 = mask 路径 + 零值。
+  // 服务端必须校验路径白名单，拒绝未声明路径。
+  optional google.protobuf.FieldMask update_mask = 6;
+}
+
+message UpdateUserResponse {
+  User user = 1 [(buf.validate.field).required = true];
+}
+
+// -----------------------------------------------------------------------------
+// 删除：DeleteUser（软删除，服务端实现保留审计）
+// -----------------------------------------------------------------------------
+
+message DeleteUserRequest {
+  string user_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+message DeleteUserResponse {
+  // 被删除资源的 ID 回显，供调用方幂等对账。
+  string user_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// -----------------------------------------------------------------------------
+// Service
+// 规范：SERVICE_SUFFIX；每个 RPC 使用独立 Request/Response 消息（RPC_REQUEST_RESPONSE_UNIQUE）
+// -----------------------------------------------------------------------------
+
+service UserService {
+  // 登录并签发令牌。非幂等（令牌 rotation）。
+  rpc Login(LoginRequest) returns (LoginResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/login"
+      body: "*"
+    };
+  }
+
+  // 修改密码（本人操作，需验证旧密码）。非幂等。
+  // 成功后服务端应吊销该用户其他会话的刷新令牌。
+  rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse) {
+    option (google.api.http) = {
+      post: "/v1/users/{user_id}:changePassword"
+      body: "*"
+    };
+  }
+
+  // 重置密码（管理员操作）：服务端生成一次性临时密码下发，用户首次登录强制改密。非幂等。
+  rpc ResetPassword(ResetPasswordRequest) returns (ResetPasswordResponse) {
+    option (google.api.http) = {
+      post: "/v1/users/{user_id}:resetPassword"
+      body: "*"
+    };
+  }
+
+  // 创建用户（管理员操作）。幂等性由 username 唯一约束保证（重复 → AlreadyExists）。
+  rpc CreateUser(CreateUserRequest) returns (CreateUserResponse) {
+    option (google.api.http) = {
+      post: "/v1/users"
+      body: "*"
+    };
+  }
+
+  // 读取单个用户。幂等。
+  rpc GetUser(GetUserRequest) returns (GetUserResponse) {
+    option (google.api.http) = {get: "/v1/users/{user_id}"};
+  }
+
+  // 分页列出用户。幂等。
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse) {
+    option (google.api.http) = {get: "/v1/users"};
+  }
+
+  // 部分更新（PATCH 三态语义，见 UpdateUserRequest 注释）。幂等。
+  rpc UpdateUser(UpdateUserRequest) returns (UpdateUserResponse) {
+    option (google.api.http) = {
+      patch: "/v1/users/{user_id}"
+      body: "*"
+    };
+  }
+
+  // 删除用户（软删除）。幂等。
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse) {
+    option (google.api.http) = {delete: "/v1/users/{user_id}"};
+  }
+}
