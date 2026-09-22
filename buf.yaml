@@ -2,13 +2,20 @@
 # 详见 docs/SCHEMA_FIRST_GUIDE.md §4.1。buf.lock 由 `buf dep update` 产出，必须提交。
 version: v2
 modules:
-  - path: proto
+  - path: api
+  - path: internal
+    lint:
+      use:
+        - STANDARD
+      except:
+        - PACKAGE_DIRECTORY_MATCH
+        - PACKAGE_VERSION_SUFFIX
 deps:
   - buf.build/bufbuild/protovalidate   # buf/validate/validate.proto
   - buf.build/googleapis/googleapis    # google/api/annotations.proto 等
 lint:
   use:
-    - STANDARD                         # 官方标准规则集（含命名/目录/版本约束）
+    - STANDARD                         # 全局默认采用标准规则集
 breaking:
   use:
-    - FILE                             # 以"文件"粒度判定破坏性变更（含跨文件引用分析）
+    - FILE                             # 以"文件"粒度判定破坏性变更

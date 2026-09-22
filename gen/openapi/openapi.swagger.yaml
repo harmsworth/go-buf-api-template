@@ -1,0 +1,456 @@
+swagger: "2.0"
+info:
+  title: user/v1/user.proto
+  version: version not set
+tags:
+  - name: UserService
+consumes:
+  - application/json
+produces:
+  - application/json
+paths:
+  /v1/auth/login:
+    post:
+      summary: 登录并签发令牌。非幂等（令牌 rotation）。
+      operationId: UserService_Login
+      responses:
+        "200":
+          description: A successful response.
+          schema:
+            $ref: '#/definitions/v1LoginResponse'
+        default:
+          description: An unexpected error response.
+          schema:
+            $ref: '#/definitions/rpcStatus'
+      parameters:
+        - name: body
+          in: body
+          required: true
+          schema:
+            $ref: '#/definitions/v1LoginRequest'
+      tags:
+        - UserService
+  /v1/users:
+    get:
+      summary: 分页列出用户。幂等。
+      operationId: UserService_ListUsers
+      responses:
+        "200":
+          description: A successful response.
+          schema:
+            $ref: '#/definitions/v1ListUsersResponse'
+        default:
+          description: An unexpected error response.
+          schema:
+            $ref: '#/definitions/rpcStatus'
+      parameters:
+        - name: pageSize
+          description: 分页大小：三态。未设置（Absent）= 服务端取默认值（如 20）；显式传值 = 精确控制，[1, 100]。
+          in: query
+          required: false
+          type: integer
+          format: int32
+        - name: pageToken
+          description: 分页游标：首页传空串；取上一次响应的 next_page_token。
+          in: query
+          required: false
+          type: string
+        - name: status
+          description: |-
+            状态过滤。optional：未设置 = 不过滤（Absent），显式传值 = 精确过滤。
+
+             - USER_STATUS_UNSPECIFIED: 未指定：仅在"未设置/不过滤"语义下合法，禁止作为真实业务态写入存储。
+             - USER_STATUS_ACTIVE: 正常。
+             - USER_STATUS_INACTIVE: 已停用（管理员操作）。
+             - USER_STATUS_LOCKED: 已锁定（风控/连续失败）。
+          in: query
+          required: false
+          type: string
+          enum:
+            - USER_STATUS_UNSPECIFIED
+            - USER_STATUS_ACTIVE
+            - USER_STATUS_INACTIVE
+            - USER_STATUS_LOCKED
+          default: USER_STATUS_UNSPECIFIED
+        - name: keyword
+          description: 关键字：对 username / nickname 做模糊匹配。
+          in: query
+          required: false
+          type: string
+        - name: showDeleted
+          description: |-
+            是否包含已删除用户（软删除，User.deleted_at 非空）。
+            默认（未设置/false）= 排除已删除；置 true = 包含，仅管理员/审计场景使用。
+          in: query
+          required: false
+          type: boolean
+      tags:
+        - UserService
+    post:
+      summary: 创建用户（管理员操作）。幂等性由 username 唯一约束保证（重复 → AlreadyExists）。
+      operationId: UserService_CreateUser
+      responses:
+        "200":
+          description: A successful response.
+          schema:
+            $ref: '#/definitions/v1CreateUserResponse'
+        default:
+          description: An unexpected error response.
+          schema:
+            $ref: '#/definitions/rpcStatus'
+      parameters:
+        - name: body
+          in: body
+          required: true
+          schema:
+            $ref: '#/definitions/v1CreateUserRequest'
+      tags:
+        - UserService
+  /v1/users/{userId}:
+    get:
+      summary: 读取单个用户。幂等。
+      operationId: UserService_GetUser
+      responses:
+        "200":
+          description: A successful response.
+          schema:
+            $ref: '#/definitions/v1GetUserResponse'
+        default:
+          description: An unexpected error response.
+          schema:
+            $ref: '#/definitions/rpcStatus'
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          type: string
+      tags:
+        - UserService
+    delete:
+      summary: 删除用户（软删除）。幂等。
+      operationId: UserService_DeleteUser
+      responses:
+        "200":
+          description: A successful response.
+          schema:
+            $ref: '#/definitions/v1DeleteUserResponse'
+        default:
+          description: An unexpected error response.
+          schema:
+            $ref: '#/definitions/rpcStatus'
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          type: string
+      tags:
+        - UserService
+    patch:
+      summary: 部分更新（PATCH 三态语义，见 UpdateUserRequest 注释）。幂等。
+      operationId: UserService_UpdateUser
+      responses:
+        "200":
+          description: A successful response.
+          schema:
+            $ref: '#/definitions/v1UpdateUserResponse'
+        default:
+          description: An unexpected error response.
+          schema:
+            $ref: '#/definitions/rpcStatus'
+      parameters:
+        - name: userId
+          description: 目标用户。
+          in: path
+          required: true
+          type: string
+        - name: body
+          in: body
+          required: true
+          schema:
+            $ref: '#/definitions/UserServiceUpdateUserBody'
+      tags:
+        - UserService
+  /v1/users/{userId}:changePassword:
+    post:
+      summary: |-
+        修改密码（本人操作，需验证旧密码）。非幂等。
+        成功后服务端应吊销该用户其他会话的刷新令牌。
+      operationId: UserService_ChangePassword
+      responses:
+        "200":
+          description: A successful response.
+          schema:
+            $ref: '#/definitions/v1ChangePasswordResponse'
+        default:
+          description: An unexpected error response.
+          schema:
+            $ref: '#/definitions/rpcStatus'
+      parameters:
+        - name: userId
+          description: 目标用户（必须与认证令牌的主体一致，由授权层强制）。
+          in: path
+          required: true
+          type: string
+        - name: body
+          in: body
+          required: true
+          schema:
+            $ref: '#/definitions/UserServiceChangePasswordBody'
+      tags:
+        - UserService
+  /v1/users/{userId}:resetPassword:
+    post:
+      summary: 重置密码（管理员操作）：服务端生成一次性临时密码下发，用户首次登录强制改密。非幂等。
+      operationId: UserService_ResetPassword
+      responses:
+        "200":
+          description: A successful response.
+          schema:
+            $ref: '#/definitions/v1ResetPasswordResponse'
+        default:
+          description: An unexpected error response.
+          schema:
+            $ref: '#/definitions/rpcStatus'
+      parameters:
+        - name: userId
+          description: 目标用户（管理员操作，无需旧密码）。
+          in: path
+          required: true
+          type: string
+        - name: body
+          in: body
+          required: true
+          schema:
+            $ref: '#/definitions/UserServiceResetPasswordBody'
+      tags:
+        - UserService
+definitions:
+  UserServiceChangePasswordBody:
+    type: object
+    properties:
+      oldPassword:
+        type: string
+        title: 旧密码：身份二次确认。校验失败 → FailedPrecondition；尝试次数由服务端限流。
+      newPassword:
+        type: string
+        title: 新密码：不得与旧密码相同（服务端校验）；复杂度见上方 CEL 规则。
+  UserServiceResetPasswordBody:
+    type: object
+  UserServiceUpdateUserBody:
+    type: object
+    properties:
+      nickname:
+        type: string
+        title: 昵称：三态。空串 = 显式清空；非空 = 2~32 位任意字符。
+      phone:
+        type: string
+        title: 手机号：三态。空串 = 显式清空；非空必须为中国大陆手机号。
+      avatarUrl:
+        type: string
+        title: |-
+          头像：三态。空串 = 显式清空；非空必须为 http(s) URL。
+          长度上限由 max_len 承担（RE2 重复计数上限为 1000，{1,2048} 无法编译）。
+      status:
+        $ref: '#/definitions/v1UserStatus'
+        title: |-
+          状态：仅两态（Absent = 不变 / 显式传值 = 变更）。
+          枚举无法表达"清空"，若需恢复默认请显式传 USER_STATUS_INACTIVE 等业务态（规范 §5.3 铁律 3）。
+      updateMask:
+        type: string
+        title: |-
+          ---- 方案 B（可选启用）：FieldMask 白名单更新（AIP-134，规范 §5.5）----
+          若设置 update_mask，则语义切换为：仅更新 mask 声明的路径；
+          optional 字段退化为两态（present = 更新 / absent = 不动），显式清空 = mask 路径 + 零值。
+          服务端必须校验路径白名单，拒绝未声明路径。
+  protobufAny:
+    type: object
+    properties:
+      '@type':
+        type: string
+    additionalProperties: {}
+  rpcStatus:
+    type: object
+    properties:
+      code:
+        type: integer
+        format: int32
+      message:
+        type: string
+      details:
+        type: array
+        items:
+          type: object
+          $ref: '#/definitions/protobufAny'
+  v1ChangePasswordResponse:
+    type: object
+    properties:
+      passwordChangedAt:
+        type: string
+        format: date-time
+        title: 密码更新时间（服务端时钟）。服务端应同时吊销该用户其他会话的刷新令牌。
+  v1CreateUserRequest:
+    type: object
+    properties:
+      username:
+        type: string
+        title: 登录名，唯一性由服务端保证（重复 → AlreadyExists）。
+      email:
+        type: string
+        title: 邮箱，唯一性由服务端保证。
+      password:
+        type: string
+        title: 初始密码。复杂度见上方 message 级 CEL 规则。
+      nickname:
+        type: string
+        title: 昵称可缺省（optional 三态字段：未设置 ≠ 空串）。
+      role:
+        $ref: '#/definitions/v1UserRole'
+        title: 初始角色，创建时必须显式指定。
+      phone:
+        type: string
+        title: 手机号，创建时可缺省（与 User.phone 校验规则一致），后续可用 UpdateUser 修改。
+  v1CreateUserResponse:
+    type: object
+    properties:
+      user:
+        $ref: '#/definitions/v1User'
+        title: 创建成功的资源快照。
+  v1DeleteUserResponse:
+    type: object
+    properties:
+      userId:
+        type: string
+        title: 被删除资源的 ID 回显，供调用方幂等对账。
+  v1GetUserResponse:
+    type: object
+    properties:
+      user:
+        $ref: '#/definitions/v1User'
+  v1ListUsersResponse:
+    type: object
+    properties:
+      users:
+        type: array
+        items:
+          type: object
+          $ref: '#/definitions/v1User'
+      nextPageToken:
+        type: string
+        title: 下一页游标；空串表示没有更多数据。
+  v1LoginRequest:
+    type: object
+    properties:
+      username:
+        type: string
+        title: 登录名（扩展：如需邮箱登录，另建 LoginByEmailRequest，勿复用消息）。
+      password:
+        type: string
+        title: 明文密码仅存在于 TLS 通道内；长度遵循 OWASP 建议 [8, 72]（bcrypt 截断上限 72 字节）。
+  v1LoginResponse:
+    type: object
+    properties:
+      accessToken:
+        type: string
+        title: JWT / 不透明令牌。
+      refreshToken:
+        type: string
+        title: 刷新令牌， rotation 策略由认证模块定义。
+      accessTokenExpiresAt:
+        type: string
+        format: date-time
+        title: access token 过期时间（服务端时钟）。
+      user:
+        $ref: '#/definitions/v1User'
+        title: 登录成功后的用户资源快照。
+      tokenType:
+        type: string
+        title: 令牌类型（OAuth2 惯例），服务端固定返回 "Bearer"。
+  v1ResetPasswordResponse:
+    type: object
+    properties:
+      temporaryPassword:
+        type: string
+        title: |-
+          服务端生成的一次性临时密码，仅本次响应返回，不落明文日志；
+          用户首次登录必须修改密码（服务端标记强制改密状态）。
+  v1UpdateUserResponse:
+    type: object
+    properties:
+      user:
+        $ref: '#/definitions/v1User'
+  v1User:
+    type: object
+    properties:
+      userId:
+        type: string
+        title: 全局唯一 ID（UUID v4），服务端生成。
+      username:
+        type: string
+        title: 登录名：字母开头，3~32 位字母/数字/下划线。唯一性由服务端保证。
+      email:
+        type: string
+        title: 邮箱。
+      nickname:
+        type: string
+        title: 展示昵称。optional：业务允许"未设置"状态，与空串严格区分（Zero Value Trap，见规范 §5）。
+      status:
+        $ref: '#/definitions/v1UserStatus'
+        title: 账号状态。optional：查询/过滤等场景"未设置"= 不过滤。
+      roles:
+        type: array
+        items:
+          $ref: '#/definitions/v1UserRole'
+        title: 全局角色，去重，至多 10 个。
+      createdAt:
+        type: string
+        format: date-time
+        title: 审计字段，服务端填充。
+      updatedAt:
+        type: string
+        format: date-time
+      phone:
+        type: string
+        title: 手机号：中国大陆格式。optional：可能未绑定。
+      avatarUrl:
+        type: string
+        title: 头像 URL。optional：未设置 = 无头像。
+      passwordHash:
+        type: string
+        title: |-
+          密码哈希（bcrypt，60 字符）。服务端独占字段：仅用于登录校验与存储。
+          严禁通过任何 API 响应下发 —— toProto 映射时必须显式置空（见 EXAMPLES.md §5）。
+      lastLoginAt:
+        type: string
+        format: date-time
+        title: 最后登录时间。optional：从未登录 = 未设置（Zero Value Trap 语义，见规范 §5）。
+      lastLoginIp:
+        type: string
+        title: 最后登录 IP（IPv4/IPv6）。optional：从未登录 = 未设置。
+      deletedAt:
+        type: string
+        format: date-time
+        title: 删除时间（软删除）。optional：未删除 = 未设置；非空即表示已删除，与 DeleteUser 呼应。
+    title: 用户资源。服务端返回体；服务端负责 user_id/username 唯一性与审计字段的填充。
+  v1UserRole:
+    type: string
+    enum:
+      - USER_ROLE_UNSPECIFIED
+      - USER_ROLE_ADMIN
+      - USER_ROLE_EDITOR
+      - USER_ROLE_VIEWER
+    default: USER_ROLE_UNSPECIFIED
+    description: 全局角色。
+  v1UserStatus:
+    type: string
+    enum:
+      - USER_STATUS_UNSPECIFIED
+      - USER_STATUS_ACTIVE
+      - USER_STATUS_INACTIVE
+      - USER_STATUS_LOCKED
+    default: USER_STATUS_UNSPECIFIED
+    description: |-
+      - USER_STATUS_UNSPECIFIED: 未指定：仅在"未设置/不过滤"语义下合法，禁止作为真实业务态写入存储。
+       - USER_STATUS_ACTIVE: 正常。
+       - USER_STATUS_INACTIVE: 已停用（管理员操作）。
+       - USER_STATUS_LOCKED: 已锁定（风控/连续失败）。
+    title: 用户账号状态。

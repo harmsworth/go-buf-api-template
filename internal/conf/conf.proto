@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package conf;
+
+option go_package = "go-buf-api-template/internal/conf;conf";
+
+// 基础系统配置
+message Bootstrap {
+  Server server = 1;
+  Database database = 2;
+  Redis redis = 3;
+  JWT jwt = 4;
+  Log log = 5;
+}
+
+// HTTP 服务与 Gin 配置
+message Server {
+  string addr = 1; // HTTP 监听地址，例如 ":8080"
+  string mode = 2; // Gin 运行模式："debug" / "release" / "test"
+}
+
+// 数据库配置 (GORM)
+message Database {
+  string driver = 1; // 驱动，例如 "mysql" / "postgres" / "sqlite"
+  string dsn = 2; // 数据库连接串 (DSN)
+  bool debug = 3; // 是否开启 GORM SQL 调试日志
+
+  // 连接池配置（GORM 生产环境必备）
+  int32 max_open_conns = 4; // 最大打开连接数
+  int32 max_idle_conns = 5; // 最大空闲连接数
+  int32 conn_max_lifetime = 6; // 连接可复用的最长时间（秒）
+}
+
+// Redis 缓存配置
+message Redis {
+  string addr = 1; // 节点地址，例如 "127.0.0.1:6379"
+  string password = 2; // 密码
+  int32 db = 3; // DB 序号
+}
+
+// JWT 鉴权配置
+message JWT {
+  string secret = 1; // 密钥签名字符串
+  int64 expire_seconds = 2; // Token 有效期（秒）
+  string issuer = 3; // 签发人名称
+}
+
+// 日志配置 (Go 原生 log/slog)
+message Log {
+  string level = 1; // 日志级别："debug" / "info" / "warn" / "error"
+  string format = 2; // 输出格式："text" (开发) / "json" (生产)
+  string file_path = 3; // 日志文件路径 (留空则默认输出到 stdout)
+}

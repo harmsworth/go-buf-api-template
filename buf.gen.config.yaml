@@ -1,0 +1,7 @@
+version: v2
+inputs:
+  - directory: internal
+plugins:
+  - remote: buf.build/protocolbuffers/go:v1.36.12
+    out: internal
+    opt: paths=source_relative
