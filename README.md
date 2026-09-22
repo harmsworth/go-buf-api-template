@@ -61,7 +61,10 @@ buf generate
 
 ## 运行服务（Todo 模块）
 
-技术栈：Gin + GORM(MySQL) + golang-migrate + wire + `log/slog`；配置由 `internal/conf/conf.proto` 生成的结构体承载（不使用 Viper）。
+技术栈：Gin + GORM(MySQL) + golang-migrate + wire + `log/slog` + `go.uber.org/automaxprocs`；配置由 `internal/conf/conf.proto` 生成的结构体承载（不使用 Viper）。
+
+> **automaxprocs**：进程启动时按 cgroup / 容器的 CPU quota 自动设置 `GOMAXPROCS`（日志接入 slog）。
+> 无 CPU 限额时保持原值并打印 `maxprocs: Leaving GOMAXPROCS=...: CPU quota undefined`——该日志出现在 slog 初始化**之前**，因此格式是 slog 默认 logger 的样式并输出到 stderr，属正常现象。
 
 ```bash
 # 启动：首次会自动建库并执行 db/migrations 下的迁移（禁用 GORM AutoMigrate）

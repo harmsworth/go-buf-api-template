@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -33,6 +34,7 @@ import (
 	protovalidatemw "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/protovalidate"
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/recovery"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	"go.uber.org/automaxprocs/maxprocs"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -51,6 +53,15 @@ type App struct {
 }
 
 func main() {
+	// 依据 cgroup / 容器的 CPU quota 自动设置 GOMAXPROCS（automaxprocs）。
+	// 容器内若沿用宿主机核数会创建过多 P，导致调度 overhead 与 GC 线程膨胀。
+	// 日志接入 slog，与其余启动日志保持一致。
+	if _, err := maxprocs.Set(maxprocs.Logger(func(format string, args ...any) {
+		slog.Info(fmt.Sprintf(format, args...))
+	})); err != nil {
+		slog.Warn("automaxprocs failed, keep default GOMAXPROCS", "error", err)
+	}
+
 	cfgPath := flag.String("conf", "configs/config.yaml", "path to config file")
 	flag.Parse()
 
