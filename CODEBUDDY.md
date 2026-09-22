@@ -2,7 +2,7 @@
 
 基于 **Protobuf + Buf 生态**的 Schema-First / IDL-First API 工程模板：契约即代码、入参校验前移到 IDL（protovalidate）、破坏性变更机器可判、Handler 层零手写校验。
 
-`.proto` 是接口的**唯一事实来源**：数据库表结构、Go 传输层 DTO、OpenAPI 文档全部由契约推导，不允许反向手写。
+`.proto` 是接口的**唯一事实来源**：数据库表结构、Go 传输层 DTO、Swagger 文档全部由契约推导，不允许反向手写。
 
 ## 铁律（违反一律打回）
 
@@ -36,7 +36,7 @@
 buf dep update                              # 更新依赖锁定（改了 deps 后必跑）
 buf lint                                    # 契约风格/结构/命名检查
 buf format --diff --exit-code               # 格式检查
-buf generate                                # 生成 Go / OpenAPI 代码
+buf generate                                # 生成 Go / gateway / Swagger 代码
 buf breaking --against '.git#branch=main'   # 破坏性变更检查
 buf build                                   # 编译契约（IDE 大量报错时先跑它）
 ```

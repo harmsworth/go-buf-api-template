@@ -94,7 +94,7 @@ buf breaking --against '.git#branch=main'       # 破坏性变更检查
 | protoc-gen-go（remote） | v1.36.12 |
 | protoc-gen-go-grpc（remote） | v1.6.2 |
 | grpc-gateway 生成插件 / 运行时 | v2.30.0 |
-| openapiv3（remote） | v2.30.0 |
+| openapiv2（remote，Swagger 2.0 合并单文件） | v2.30.0 |
 | go-grpc-middleware/v2 | v2.3.4 |
 | protovalidate Go 运行时 | `buf.build/go/protovalidate@latest` |
 

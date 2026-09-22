@@ -11,11 +11,12 @@
 ├── buf.lock                  # 依赖锁定（buf dep update 产出，必须提交）
 ├── buf.gen.yaml              # 代码生成配置：remote plugins 版本锁定，无需本地装 protoc
 ├── api/
-│   ├── user/v1/user.proto    # 用户域契约：8 个 RPC + protovalidate 校验规则
-│   └── todo/v1/todo.proto    # 待办域契约：CRUD + google.api.http 注解
+│   ├── user/v1/user.proto    # 用户域契约：8 个 RPC + protovalidate 校验 + google.api.http 注解
+│   └── todo/v1/todo.proto    # 待办域契约：5 个 RPC + protovalidate 校验 + google.api.http 注解
 ├── gen/
 │   ├── go/user/v1/           # 生成：Go 结构体 / gRPC Stub / grpc-gateway 反向代理
-│   └── openapi/user/v1/      # 生成：OpenAPI v3 契约文档（前端/网关交付物）
+│   ├── go/todo/v1/           # 生成：Todo 域同构产物
+│   └── openapi/              # 生成：openapi.swagger.yaml（Swagger 2.0，openapiv2 合并单文件）
 ├── .codebuddy/rules/         # CodeBuddy / WorkBuddy 项目规则（随仓库提交，团队共享）
 ├── CODEBUDDY.md              # AI 全局上下文（CodeBuddy / WorkBuddy 默认加载）
 └── docs/                     # 规范与范式文档（入口见 docs/README.md）
