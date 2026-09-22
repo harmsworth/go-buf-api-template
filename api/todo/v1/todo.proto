@@ -1,0 +1,165 @@
+syntax = "proto3";
+
+package todo.v1;
+
+import "buf/validate/validate.proto";
+import "google/api/annotations.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "go-buf-api-template/gen/go/todo/v1;todov1";
+
+// 待办事项状态。
+enum TodoStatus {
+  // 未指定。
+  TODO_STATUS_UNSPECIFIED = 0;
+  // 待处理。
+  TODO_STATUS_PENDING = 1;
+  // 进行中。
+  TODO_STATUS_IN_PROGRESS = 2;
+  // 已完成。
+  TODO_STATUS_DONE = 3;
+}
+
+// 待办事项资源。
+message Todo {
+  // 全局唯一 ID（UUID v4），服务端生成。
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // 标题。
+  string title = 2 [(buf.validate.field).string.min_len = 1];
+  // 描述。optional：未设置 = 无描述，与空串严格区分。
+  optional string description = 3;
+  // 状态。
+  TodoStatus status = 4 [(buf.validate.field).enum.defined_only = true];
+  // 创建时间。
+  google.protobuf.Timestamp created_at = 5;
+  // 更新时间。
+  google.protobuf.Timestamp updated_at = 6;
+  // 完成时间。optional：未完成 = 未设置。
+  optional google.protobuf.Timestamp completed_at = 7;
+}
+
+// 创建待办。
+message CreateTodoRequest {
+  // 标题，1~128 字符。
+  string title = 1 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).string.max_len = 128
+  ];
+  // 描述，可缺省，最长 2048 字符。
+  optional string description = 2 [(buf.validate.field).string.max_len = 2048];
+}
+
+message CreateTodoResponse {
+  Todo todo = 1;
+}
+
+// 查询单个待办。
+message GetTodoRequest {
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+message GetTodoResponse {
+  Todo todo = 1;
+}
+
+// 分页列出待办。
+// 遵循 AIP-132（List）/ AIP-158（分页）/ AIP-160（过滤）：
+//   - page_size：分页大小，0 表示由服务端决定；
+//   - page_token：不透明游标（由 aip/pagination 生成）；
+//   - filter：过滤表达式，如 `status = "DONE" AND title : "Meeting"`；
+//   - order_by：排序表达式，如 `created_at desc, title asc`。
+message ListTodosRequest {
+  // 分页大小，[0, 100]；0 表示服务端默认值。
+  int32 page_size = 1 [
+    (buf.validate.field).int32.gte = 0,
+    (buf.validate.field).int32.lte = 100
+  ];
+  // 分页游标：首页传空串；取上一次响应的 next_page_token。
+  string page_token = 2 [(buf.validate.field).string.pattern = "^[A-Za-z0-9_-]*$"];
+  // 状态过滤（旧字段，保留兼容）：建议改用 filter。optional：未设置 = 不过滤。
+  optional TodoStatus status = 3 [(buf.validate.field).enum.defined_only = true];
+  // AIP-160 过滤表达式，如 `status = "DONE" AND title : "Meeting"`。
+  string filter = 4;
+  // AIP-132 排序表达式，如 `created_at desc, title asc`。
+  string order_by = 5;
+}
+
+message ListTodosResponse {
+  repeated Todo todos = 1;
+  // 下一页游标；空串表示没有更多数据。
+  string next_page_token = 2 [(buf.validate.field).string.pattern = "^[A-Za-z0-9_-]*$"];
+}
+
+// 更新待办：PATCH 三态语义。
+//   Absent（未传递）        → 保持不变
+//   Explicit Value（传值）  → 更新为该值
+//   Explicit Clear（空串）  → 清空该字段
+message UpdateTodoRequest {
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // 标题：空串 = 拒绝（标题不可为空），非空 1~128 字符。
+  optional string title = 2 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).string.max_len = 128
+  ];
+  // 描述：三态，空串 = 显式清空。
+  optional string description = 3 [(buf.validate.field).string.max_len = 2048];
+  // 状态：枚举无法表达"清空"，仅两态。
+  optional TodoStatus status = 4 [(buf.validate.field).enum.defined_only = true];
+  // AIP-134 字段掩码：只有 paths 中声明的字段会被更新（如 ["title","status"]）。
+  // 特殊值 "*" 表示全量替换（等价于 PUT）。
+  google.protobuf.FieldMask update_mask = 5;
+}
+
+message UpdateTodoResponse {
+  Todo todo = 1;
+}
+
+// 删除待办（软删除）。
+message DeleteTodoRequest {
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+message DeleteTodoResponse {
+  // 被删除资源的 ID 回显，供调用方幂等对账。
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// -----------------------------------------------------------------------------
+// Service
+// 规范：SERVICE_SUFFIX；每个 RPC 使用独立 Request/Response 消息（RPC_REQUEST_RESPONSE_UNIQUE）。
+// REST 映射由 google.api.http 注解声明，grpc-gateway 反向代理据此生成 HTTP 路由。
+// -----------------------------------------------------------------------------
+
+service TodoService {
+  // 创建待办。幂等性由业务层保证（重复提交视为新建）。
+  rpc CreateTodo(CreateTodoRequest) returns (CreateTodoResponse) {
+    option (google.api.http) = {
+      post: "/v1/todos"
+      body: "*"
+    };
+  }
+
+  // 读取单个待办。幂等。
+  rpc GetTodo(GetTodoRequest) returns (GetTodoResponse) {
+    option (google.api.http) = {get: "/v1/todos/{id}"};
+  }
+
+  // 分页列出待办。幂等。
+  rpc ListTodos(ListTodosRequest) returns (ListTodosResponse) {
+    option (google.api.http) = {get: "/v1/todos"};
+  }
+
+  // 部分更新（PATCH 三态语义，见 UpdateTodoRequest 注释）。幂等。
+  rpc UpdateTodo(UpdateTodoRequest) returns (UpdateTodoResponse) {
+    option (google.api.http) = {
+      patch: "/v1/todos/{id}"
+      body: "*"
+    };
+  }
+
+  // 删除待办（软删除）。幂等。
+  rpc DeleteTodo(DeleteTodoRequest) returns (DeleteTodoResponse) {
+    option (google.api.http) = {delete: "/v1/todos/{id}"};
+  }
+}

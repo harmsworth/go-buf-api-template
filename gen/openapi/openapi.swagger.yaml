@@ -1,8 +1,9 @@
 swagger: "2.0"
 info:
-  title: user/v1/user.proto
+  title: todo/v1/todo.proto
   version: version not set
 tags:
+  - name: TodoService
   - name: UserService
 consumes:
   - application/json
@@ -30,6 +31,143 @@ paths:
             $ref: '#/definitions/v1LoginRequest'
       tags:
         - UserService
+  /v1/todos:
+    get:
+      summary: 分页列出待办。幂等。
+      operationId: TodoService_ListTodos
+      responses:
+        "200":
+          description: A successful response.
+          schema:
+            $ref: '#/definitions/v1ListTodosResponse'
+        default:
+          description: An unexpected error response.
+          schema:
+            $ref: '#/definitions/rpcStatus'
+      parameters:
+        - name: pageSize
+          description: 分页大小，[0, 100]；0 表示服务端默认值。
+          in: query
+          required: false
+          type: integer
+          format: int32
+        - name: pageToken
+          description: 分页游标：首页传空串；取上一次响应的 next_page_token。
+          in: query
+          required: false
+          type: string
+        - name: status
+          description: |-
+            状态过滤（旧字段，保留兼容）：建议改用 filter。optional：未设置 = 不过滤。
+
+             - TODO_STATUS_UNSPECIFIED: 未指定。
+             - TODO_STATUS_PENDING: 待处理。
+             - TODO_STATUS_IN_PROGRESS: 进行中。
+             - TODO_STATUS_DONE: 已完成。
+          in: query
+          required: false
+          type: string
+          enum:
+            - TODO_STATUS_UNSPECIFIED
+            - TODO_STATUS_PENDING
+            - TODO_STATUS_IN_PROGRESS
+            - TODO_STATUS_DONE
+          default: TODO_STATUS_UNSPECIFIED
+        - name: filter
+          description: 'AIP-160 过滤表达式，如 `status = "DONE" AND title : "Meeting"`。'
+          in: query
+          required: false
+          type: string
+        - name: orderBy
+          description: AIP-132 排序表达式，如 `created_at desc, title asc`。
+          in: query
+          required: false
+          type: string
+      tags:
+        - TodoService
+    post:
+      summary: 创建待办。幂等性由业务层保证（重复提交视为新建）。
+      operationId: TodoService_CreateTodo
+      responses:
+        "200":
+          description: A successful response.
+          schema:
+            $ref: '#/definitions/v1CreateTodoResponse'
+        default:
+          description: An unexpected error response.
+          schema:
+            $ref: '#/definitions/rpcStatus'
+      parameters:
+        - name: body
+          in: body
+          required: true
+          schema:
+            $ref: '#/definitions/v1CreateTodoRequest'
+      tags:
+        - TodoService
+  /v1/todos/{id}:
+    get:
+      summary: 读取单个待办。幂等。
+      operationId: TodoService_GetTodo
+      responses:
+        "200":
+          description: A successful response.
+          schema:
+            $ref: '#/definitions/v1GetTodoResponse'
+        default:
+          description: An unexpected error response.
+          schema:
+            $ref: '#/definitions/rpcStatus'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          type: string
+      tags:
+        - TodoService
+    delete:
+      summary: 删除待办（软删除）。幂等。
+      operationId: TodoService_DeleteTodo
+      responses:
+        "200":
+          description: A successful response.
+          schema:
+            $ref: '#/definitions/v1DeleteTodoResponse'
+        default:
+          description: An unexpected error response.
+          schema:
+            $ref: '#/definitions/rpcStatus'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          type: string
+      tags:
+        - TodoService
+    patch:
+      summary: 部分更新（PATCH 三态语义，见 UpdateTodoRequest 注释）。幂等。
+      operationId: TodoService_UpdateTodo
+      responses:
+        "200":
+          description: A successful response.
+          schema:
+            $ref: '#/definitions/v1UpdateTodoResponse'
+        default:
+          description: An unexpected error response.
+          schema:
+            $ref: '#/definitions/rpcStatus'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          type: string
+        - name: body
+          in: body
+          required: true
+          schema:
+            $ref: '#/definitions/TodoServiceUpdateTodoBody'
+      tags:
+        - TodoService
   /v1/users:
     get:
       summary: 分页列出用户。幂等。
@@ -45,7 +183,7 @@ paths:
             $ref: '#/definitions/rpcStatus'
       parameters:
         - name: pageSize
-          description: 分页大小：三态。未设置（Absent）= 服务端取默认值（如 20）；显式传值 = 精确控制，[1, 100]。
+          description: 分页大小，[0, 100]；0 表示服务端默认值。
           in: query
           required: false
           type: integer
@@ -57,7 +195,7 @@ paths:
           type: string
         - name: status
           description: |-
-            状态过滤。optional：未设置 = 不过滤（Absent），显式传值 = 精确过滤。
+            状态过滤（旧字段，保留兼容）：建议改用 filter。optional：未设置 = 不过滤。
 
              - USER_STATUS_UNSPECIFIED: 未指定：仅在"未设置/不过滤"语义下合法，禁止作为真实业务态写入存储。
              - USER_STATUS_ACTIVE: 正常。
@@ -73,7 +211,7 @@ paths:
             - USER_STATUS_LOCKED
           default: USER_STATUS_UNSPECIFIED
         - name: keyword
-          description: 关键字：对 username / nickname 做模糊匹配。
+          description: 关键字：对 username / nickname 做模糊匹配（旧字段，保留兼容）。
           in: query
           required: false
           type: string
@@ -84,6 +222,16 @@ paths:
           in: query
           required: false
           type: boolean
+        - name: filter
+          description: 'AIP-160 过滤表达式，如 `status = "ACTIVE" AND username : "alice"`。'
+          in: query
+          required: false
+          type: string
+        - name: orderBy
+          description: AIP-132 排序表达式，如 `created_at desc, username asc`。
+          in: query
+          required: false
+          type: string
       tags:
         - UserService
     post:
@@ -225,6 +373,28 @@ paths:
       tags:
         - UserService
 definitions:
+  TodoServiceUpdateTodoBody:
+    type: object
+    properties:
+      title:
+        type: string
+        title: 标题：空串 = 拒绝（标题不可为空），非空 1~128 字符。
+      description:
+        type: string
+        title: 描述：三态，空串 = 显式清空。
+      status:
+        $ref: '#/definitions/v1TodoStatus'
+        title: 状态：枚举无法表达"清空"，仅两态。
+      updateMask:
+        type: string
+        title: |-
+          AIP-134 字段掩码：只有 paths 中声明的字段会被更新（如 ["title","status"]）。
+          特殊值 "*" 表示全量替换（等价于 PUT）。
+    title: |-
+      更新待办：PATCH 三态语义。
+        Absent（未传递）        → 保持不变
+        Explicit Value（传值）  → 更新为该值
+        Explicit Clear（空串）  → 清空该字段
   UserServiceChangePasswordBody:
     type: object
     properties:
@@ -288,6 +458,21 @@ definitions:
         type: string
         format: date-time
         title: 密码更新时间（服务端时钟）。服务端应同时吊销该用户其他会话的刷新令牌。
+  v1CreateTodoRequest:
+    type: object
+    properties:
+      title:
+        type: string
+        title: 标题，1~128 字符。
+      description:
+        type: string
+        title: 描述，可缺省，最长 2048 字符。
+    title: 创建待办。
+  v1CreateTodoResponse:
+    type: object
+    properties:
+      todo:
+        $ref: '#/definitions/v1Todo'
   v1CreateUserRequest:
     type: object
     properties:
@@ -315,17 +500,39 @@ definitions:
       user:
         $ref: '#/definitions/v1User'
         title: 创建成功的资源快照。
+  v1DeleteTodoResponse:
+    type: object
+    properties:
+      id:
+        type: string
+        title: 被删除资源的 ID 回显，供调用方幂等对账。
   v1DeleteUserResponse:
     type: object
     properties:
       userId:
         type: string
         title: 被删除资源的 ID 回显，供调用方幂等对账。
+  v1GetTodoResponse:
+    type: object
+    properties:
+      todo:
+        $ref: '#/definitions/v1Todo'
   v1GetUserResponse:
     type: object
     properties:
       user:
         $ref: '#/definitions/v1User'
+  v1ListTodosResponse:
+    type: object
+    properties:
+      todos:
+        type: array
+        items:
+          type: object
+          $ref: '#/definitions/v1Todo'
+      nextPageToken:
+        type: string
+        title: 下一页游标；空串表示没有更多数据。
   v1ListUsersResponse:
     type: object
     properties:
@@ -373,6 +580,53 @@ definitions:
         title: |-
           服务端生成的一次性临时密码，仅本次响应返回，不落明文日志；
           用户首次登录必须修改密码（服务端标记强制改密状态）。
+  v1Todo:
+    type: object
+    properties:
+      id:
+        type: string
+        title: 全局唯一 ID（UUID v4），服务端生成。
+      title:
+        type: string
+        title: 标题。
+      description:
+        type: string
+        title: 描述。optional：未设置 = 无描述，与空串严格区分。
+      status:
+        $ref: '#/definitions/v1TodoStatus'
+        title: 状态。
+      createdAt:
+        type: string
+        format: date-time
+        title: 创建时间。
+      updatedAt:
+        type: string
+        format: date-time
+        title: 更新时间。
+      completedAt:
+        type: string
+        format: date-time
+        title: 完成时间。optional：未完成 = 未设置。
+    title: 待办事项资源。
+  v1TodoStatus:
+    type: string
+    enum:
+      - TODO_STATUS_UNSPECIFIED
+      - TODO_STATUS_PENDING
+      - TODO_STATUS_IN_PROGRESS
+      - TODO_STATUS_DONE
+    default: TODO_STATUS_UNSPECIFIED
+    description: |-
+      - TODO_STATUS_UNSPECIFIED: 未指定。
+       - TODO_STATUS_PENDING: 待处理。
+       - TODO_STATUS_IN_PROGRESS: 进行中。
+       - TODO_STATUS_DONE: 已完成。
+    title: 待办事项状态。
+  v1UpdateTodoResponse:
+    type: object
+    properties:
+      todo:
+        $ref: '#/definitions/v1Todo'
   v1UpdateUserResponse:
     type: object
     properties:

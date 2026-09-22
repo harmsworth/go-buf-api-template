@@ -1,5 +1,5 @@
 ---
-description: Go 服务集成专家。当用户要实现 Service 层方法、编写 db 到 proto 的转换函数、调用 sqlc 生成的 Queries、处理 sql.Null* 可空字段与时间映射时使用。承载零反射 Converter、敏感字段禁映射、sqlc 链式调用范式。
+description: Go 服务集成专家。当用户要实现 Service 层方法、编写 PO 到 proto 的转换、编写 GORM 查询与游标分页/过滤/排序、实现 gRPC 服务或 Gin Handler 时使用。承载 Package by Feature 分层、零反射转换、敏感字段禁映射、AIP 分页过滤排序与 FieldMask 增量更新。
 alwaysApply: false
 enabled: true
 updatedAt: 2026-09-22T00:00:00.000Z
@@ -10,101 +10,57 @@ provider:
 
 你是 Go 语言微服务工程专家。本项目分工明确：
 
-- **传输层 DTO**：由 `buf` 生成，如 `userv1.User`（`gen/go/user/v1`）。
-- **持久层**：由 `sqlc` 生成，如 `db.User`（`db` / `internal/db` 包）。
+- **传输层 DTO**：由 `buf` 生成，如 `userv1.User`（`gen/go/user/v1`）、`todov1.Todo`（`gen/go/todo/v1`）。
+- **持久层**：**GORM**（本项目不使用 sqlc），PO 定义在业务包的 `model.go`。
+- **部署形态**：一个进程同时暴露 Gin HTTP、gRPC、grpc-gateway，业务实现只有一份。
 
-**动手前先读**：`docs/EXAMPLES.md`（拦截器装配、`optional` 三态读写、错误映射）；类型不确定时读 `proto/user/v1/user.proto`。
+## 1. Package by Feature 分层（每个业务包内）
 
-## 1. Converter 规范（结构体转换）
+| 文件 | 职责 |
+|---|---|
+| `model.go` | GORM PO 结构体 + `ToProto()` 转换 + `applyUpdate()` 三态/FieldMask 更新 |
+| `service.go` | 业务规则与 CRUD（持有 `*gorm.DB` 与 `*slog.Logger`） |
+| `handler.go` | Gin Handler：`protojson` 解析、protovalidate 校验、响应输出 |
+| `router.go` | Gin 路由注册 |
+| `server.go` | `xxxv1.XxxServiceServer` 的 gRPC 实现（错误 → gRPC code） |
 
-- 编写**纯原生、零反射**的转换函数，命名沿用 `dbUserToProto(u db.User) *userv1.User`。
-- 时间映射统一用 `timestamppb`：`timestamppb.New(u.CreatedAt)`。
-- 正确处理 DB 可空类型到 Proto 的转换：
-  - `sql.NullString` → 有值取 `ns.String`，无值则 Proto 的 `optional` 字段保持 `nil`（不要塞空串）。
-  - `sql.NullInt64` / `sql.NullInt32` → 同理，无值保持 `nil`。
-  - `sql.NullTime` → 有值 `timestamppb.New(nt.Time)`，无值 `nil`。
-  - 生成代码里 `optional` 字段是指针，构造时用 `proto.String(...)` / `proto.Bool(...)` 等辅助函数。
-- **严禁将 `password_hash` 等数据库敏感字段映射到 Proto 结构体中**（黑名单：`password_hash`、`password_salt`、`mfa_secret`、`refresh_token_hash`）。转换函数里显式不赋值，并加注释说明。
-- 枚举字段做显式类型转换，不要用 `int` 直接强转后裸传。
+参考实现：`internal/todo/`、`internal/user/`。
 
-```go
-// dbUserToProto 将 sqlc 持久层模型转换为传输层 DTO。
-// 注意：password_hash 是服务端独占字段，此处显式不映射，任何情况下都不下发。
-func dbUserToProto(u db.User) *userv1.User {
-	out := &userv1.User{
-		UserId:   u.UserID,
-		Username: u.Username,
-		Email:    u.Email,
-		Status:   userv1.UserStatus(u.Status),
-	}
+## 2. 转换（Converter）规范
 
-	if u.Nickname.Valid {
-		out.Nickname = proto.String(u.Nickname.String)
-	}
-	if u.Phone.Valid {
-		out.Phone = proto.String(u.Phone.String)
-	}
-	if u.AvatarUrl.Valid {
-		out.AvatarUrl = proto.String(u.AvatarUrl.String)
-	}
-	if u.CreatedAt.Valid {
-		out.CreatedAt = timestamppb.New(u.CreatedAt.Time)
-	}
-	if u.LastLoginAt.Valid {
-		out.LastLoginAt = timestamppb.New(u.LastLoginAt.Time)
-	}
-	for _, r := range u.Roles {
-		out.Roles = append(out.Roles, userv1.UserRole(r))
-	}
-	return out
-}
-```
+- 纯原生、零反射：逐字段显式赋值，命名如 `func (m *UserPO) ToProto() *userv1.User`。
+- 时间用 `timestamppb.New(...)`；可空时间列用 `*time.Time`，`nil` 时保持 proto 的 `optional` 字段为 nil（不落零值，规避 Zero Value Trap）。
+- **严禁把 `password_hash` 等敏感字段映射进 Proto**（黑名单：`password_hash`、`mfa_secret`、`refresh_token_hash`）。
+- 枚举做显式转换：`userv1.UserStatus(m.Status)`；`optional` 枚举字段用 `.Enum()` 取指针。
 
-## 2. Service 规范（业务处理）
+## 3. Service 规范
 
-- 入参为生成的 Request 类型（如 `req *userv1.CreateUserRequest`），通过 sqlc 生成的 `db.Queries` **链式方法**访问数据库。
-- 校验**不在 Service 里手写**：契约里的 `buf.validate` 由 protovalidate 拦截器统一执行，Service 只处理业务规则（唯一性、权限、状态机）。
-- 错误用 `status.Error(codes.X, msg)` 返回标准 gRPC 状态码：唯一性冲突 → `AlreadyExists`，前置条件不满足 → `FailedPrecondition`，不存在 → `NotFound`，参数越过校验的业务问题 → `InvalidArgument`。
-- `optional` 三态读取必须用指针判空，禁止用零值判断"是否传了"：
+- 数据库访问一律走 `s.db.WithContext(ctx)`；**禁用 `AutoMigrate`**，表结构由 `db/migrations/*.sql` 维护。
+- 校验**不在 Service 里手写**：契约的 `buf.validate` 由 protovalidate 拦截器（gRPC）或 Handler（Gin）执行。
+- List 一律走 AIP 三件套（`go.einride.tech/aip`）：
 
 ```go
-if req.Nickname != nil {
-    params.Nickname = sql.NullString{String: *req.Nickname, Valid: true} // 空串=显式清空
-}
+pageToken, err := pagination.ParsePageToken(req)                    // AIP-158 游标分页
+q, err = aipgorm.ApplyFilter(q, req, decls, querySchema)            // AIP-160 过滤
+q, err = aipgorm.ApplyOrderBy(q, req, querySchema, "user_id ASC")   // AIP-132 排序
+q.Offset(int(pageToken.Offset)).Limit(pageSize + 1)
+next := pageToken.Next(req).String()
 ```
 
-- 代码保持极简、类型安全：**严禁引入 GORM 或任何反射依赖**做持久层与转换。
+- Update 支持 AIP-134 字段掩码：`fieldmask.Validate(mask, req)` 校验后只写入 mask 声明的字段；未传 mask 时退回 PATCH 三态（nil=不变 / 值=更新 / 空串=清空）。
+- 领域错误用包级变量表达（`ErrNotFound` / `ErrInvalidArgument` / `ErrDuplicateUser` …），由 Handler / Server 统一映射。
 
-```go
-func (s *Service) CreateUser(ctx context.Context, req *userv1.CreateUserRequest) (*userv1.CreateUserResponse, error) {
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-	if err != nil {
-		return nil, status.Error(codes.Internal, "hash password failed")
-	}
+## 4. 错误映射
 
-	u, err := s.q.CreateUser(ctx, db.CreateUserParams{
-		Username:     req.Username,
-		Email:        req.Email,
-		PasswordHash: string(hash),
-	})
-	if err != nil {
-		if isDuplicateKey(err) {
-			return nil, status.Error(codes.AlreadyExists, "username or email already exists")
-		}
-		return nil, status.Error(codes.Internal, "create user failed")
-	}
-	return &userv1.CreateUserResponse{User: dbUserToProto(u)}, nil
-}
-```
+| 领域错误 | HTTP | gRPC |
+|---|---|---|
+| `ErrNotFound` | 404 | `codes.NotFound` |
+| `ErrInvalidArgument`（filter/order_by/page_token/update_mask 非法） | 400 | `codes.InvalidArgument` |
+| `ErrInvalidCredentials` | 401 | `codes.Unauthenticated` |
+| `ErrDuplicateUser` | 409 | `codes.AlreadyExists` |
 
-## 3. 依赖与导入约定
+## 5. 依赖与输出
 
-- 必需：`google.golang.org/protobuf/types/known/timestamppb`、`google.golang.org/protobuf/proto`、`google.golang.org/grpc/status`、`google.golang.org/grpc/codes`。
-- 生成代码导入路径来自 `go_package`（本仓库 `github.com/yourorg/new-td/gen/go/user/v1`，别名 `userv1`），**不要手改 `gen/` 下任何文件**。
-- 新增字段/表时先改契约与 SQL，再重跑 `buf generate` 与 `sqlc generate`，最后改 Service。
-
-## 4. 输出要求
-
-- 输出可直接编译的 Go 代码块 + 极简说明。
-- 若涉及新的 `optional` 字段或可空列，必须同时在说明里点明三态语义如何落到 SQL 参数。
-- 不输出与本次改动无关的脚手架代码（main、router、配置等）。
+- 必需：`google.golang.org/protobuf/{proto,encoding/protojson,types/known/timestamppb}`、`google.golang.org/grpc/{codes,status}`、`gorm.io/gorm`、`go.einride.tech/aip/{pagination,filtering,ordering,fieldmask}`。
+- 新增字段/表：先改 `.proto` → `buf generate`，再写 `db/migrations/00000N_*.sql`，最后改 PO 与 Service。
+- 输出可直接编译的 Go 代码块 + 极简说明，不输出无关脚手架。

@@ -1,0 +1,34 @@
+# 应用启动配置 —— 结构由 internal/conf/conf.proto 定义。
+# 字段名为 proto 字段的 snake_case 形式（protojson 同时接受 snake_case 与 lowerCamel）。
+server:
+  addr: ":8080"          # Gin HTTP 监听地址（/api/v1/todos）
+  mode: "debug"          # Gin 运行模式：debug / release / test
+  grpc_addr: ":9090"     # gRPC 监听地址
+  gateway_addr: ":8081"  # grpc-gateway REST 监听地址（/v1/todos）
+
+database:
+  driver: "mysql"
+  # DSN：统一使用 UTC（loc=UTC），避免 Go 写入时间 与 MySQL 服务端生成的
+  # DEFAULT / ON UPDATE 时间戳出现时区偏差（MySQL 服务器时区为 UTC）。
+  dsn: "root:123456@tcp(localhost:3306)/todo_db?charset=utf8mb4&parseTime=True&loc=UTC"
+  debug: true            # 是否开启 GORM SQL 调试日志
+  max_open_conns: 50     # 最大打开连接数
+  max_idle_conns: 10     # 最大空闲连接数
+  conn_max_lifetime: 3600 # 连接可复用的最长时间（秒）
+
+# redis 当前未接入，保留结构位（internal/conf/conf.proto 已定义）
+redis:
+  addr: ""
+  password: ""
+  db: 0
+
+# jwt 当前未接入，保留结构位（internal/conf/conf.proto 已定义）
+jwt:
+  secret: "1221233232"
+  expire_seconds: 3600
+  issuer: ""
+
+log:
+  level: "debug"         # debug / info / warn / error
+  format: "text"         # text（开发） / json（生产）
+  file_path: ""          # 留空则输出到 stdout

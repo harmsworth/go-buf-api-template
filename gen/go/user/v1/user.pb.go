@@ -870,19 +870,29 @@ func (x *GetUserResponse) GetUser() *User {
 	return nil
 }
 
+// 分页列出用户。
+// 遵循 AIP-132（List）/ AIP-158（分页）/ AIP-160（过滤）：
+//   - page_size：分页大小，0 表示由服务端决定；
+//   - page_token：不透明游标（由 aip/pagination 生成）；
+//   - filter：过滤表达式，如 `role = "ADMIN" AND username : "ali*"`；
+//   - order_by：排序表达式，如 `created_at desc, username asc`。
 type ListUsersRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// 分页大小：三态。未设置（Absent）= 服务端取默认值（如 20）；显式传值 = 精确控制，[1, 100]。
-	PageSize *int32 `protobuf:"varint,1,opt,name=page_size,json=pageSize,proto3,oneof" json:"page_size,omitempty"`
+	// 分页大小，[0, 100]；0 表示服务端默认值。
+	PageSize int32 `protobuf:"varint,1,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
 	// 分页游标：首页传空串；取上一次响应的 next_page_token。
 	PageToken string `protobuf:"bytes,2,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
-	// 状态过滤。optional：未设置 = 不过滤（Absent），显式传值 = 精确过滤。
+	// 状态过滤（旧字段，保留兼容）：建议改用 filter。optional：未设置 = 不过滤。
 	Status *UserStatus `protobuf:"varint,3,opt,name=status,proto3,enum=user.v1.UserStatus,oneof" json:"status,omitempty"`
-	// 关键字：对 username / nickname 做模糊匹配。
+	// 关键字：对 username / nickname 做模糊匹配（旧字段，保留兼容）。
 	Keyword *string `protobuf:"bytes,4,opt,name=keyword,proto3,oneof" json:"keyword,omitempty"`
 	// 是否包含已删除用户（软删除，User.deleted_at 非空）。
 	// 默认（未设置/false）= 排除已删除；置 true = 包含，仅管理员/审计场景使用。
-	ShowDeleted   *bool `protobuf:"varint,5,opt,name=show_deleted,json=showDeleted,proto3,oneof" json:"show_deleted,omitempty"`
+	ShowDeleted *bool `protobuf:"varint,5,opt,name=show_deleted,json=showDeleted,proto3,oneof" json:"show_deleted,omitempty"`
+	// AIP-160 过滤表达式，如 `status = "ACTIVE" AND username : "alice"`。
+	Filter string `protobuf:"bytes,6,opt,name=filter,proto3" json:"filter,omitempty"`
+	// AIP-132 排序表达式，如 `created_at desc, username asc`。
+	OrderBy       string `protobuf:"bytes,7,opt,name=order_by,json=orderBy,proto3" json:"order_by,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -918,8 +928,8 @@ func (*ListUsersRequest) Descriptor() ([]byte, []int) {
 }
 
 func (x *ListUsersRequest) GetPageSize() int32 {
-	if x != nil && x.PageSize != nil {
-		return *x.PageSize
+	if x != nil {
+		return x.PageSize
 	}
 	return 0
 }
@@ -950,6 +960,20 @@ func (x *ListUsersRequest) GetShowDeleted() bool {
 		return *x.ShowDeleted
 	}
 	return false
+}
+
+func (x *ListUsersRequest) GetFilter() string {
+	if x != nil {
+		return x.Filter
+	}
+	return ""
+}
+
+func (x *ListUsersRequest) GetOrderBy() string {
+	if x != nil {
+		return x.OrderBy
+	}
+	return ""
 }
 
 type ListUsersResponse struct {
@@ -1304,16 +1328,16 @@ const file_user_v1_user_proto_rawDesc = "" +
 	"\x0eGetUserRequest\x12!\n" +
 	"\auser_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\x06userId\"<\n" +
 	"\x0fGetUserResponse\x12)\n" +
-	"\x04user\x18\x01 \x01(\v2\r.user.v1.UserB\x06\xbaH\x03\xc8\x01\x01R\x04user\"\xb9\x02\n" +
-	"\x10ListUsersRequest\x12+\n" +
-	"\tpage_size\x18\x01 \x01(\x05B\t\xbaH\x06\x1a\x04\x18d(\x01H\x00R\bpageSize\x88\x01\x01\x126\n" +
+	"\x04user\x18\x01 \x01(\v2\r.user.v1.UserB\x06\xbaH\x03\xc8\x01\x01R\x04user\"\xd9\x02\n" +
+	"\x10ListUsersRequest\x12&\n" +
+	"\tpage_size\x18\x01 \x01(\x05B\t\xbaH\x06\x1a\x04\x18d(\x00R\bpageSize\x126\n" +
 	"\n" +
 	"page_token\x18\x02 \x01(\tB\x17\xbaH\x14r\x122\x10^[A-Za-z0-9_-]*$R\tpageToken\x12:\n" +
-	"\x06status\x18\x03 \x01(\x0e2\x13.user.v1.UserStatusB\b\xbaH\x05\x82\x01\x02\x10\x01H\x01R\x06status\x88\x01\x01\x12&\n" +
-	"\akeyword\x18\x04 \x01(\tB\a\xbaH\x04r\x02\x18@H\x02R\akeyword\x88\x01\x01\x12&\n" +
-	"\fshow_deleted\x18\x05 \x01(\bH\x03R\vshowDeleted\x88\x01\x01B\f\n" +
-	"\n" +
-	"_page_sizeB\t\n" +
+	"\x06status\x18\x03 \x01(\x0e2\x13.user.v1.UserStatusB\b\xbaH\x05\x82\x01\x02\x10\x01H\x00R\x06status\x88\x01\x01\x12&\n" +
+	"\akeyword\x18\x04 \x01(\tB\a\xbaH\x04r\x02\x18@H\x01R\akeyword\x88\x01\x01\x12&\n" +
+	"\fshow_deleted\x18\x05 \x01(\bH\x02R\vshowDeleted\x88\x01\x01\x12\x16\n" +
+	"\x06filter\x18\x06 \x01(\tR\x06filter\x12\x19\n" +
+	"\border_by\x18\a \x01(\tR\aorderByB\t\n" +
 	"\a_statusB\n" +
 	"\n" +
 	"\b_keywordB\x0f\n" +
@@ -1363,8 +1387,8 @@ const file_user_v1_user_proto_rawDesc = "" +
 	"\n" +
 	"UpdateUser\x12\x1a.user.v1.UpdateUserRequest\x1a\x1b.user.v1.UpdateUserResponse\"\x1e\x82\xd3\xe4\x93\x02\x18:\x01*2\x13/v1/users/{user_id}\x12b\n" +
 	"\n" +
-	"DeleteUser\x12\x1a.user.v1.DeleteUserRequest\x1a\x1b.user.v1.DeleteUserResponse\"\x1b\x82\xd3\xe4\x93\x02\x15*\x13/v1/users/{user_id}BN\n" +
-	"\x19com.yourorg.newtd.user.v1P\x01Z/github.com/yourorg/new-td/gen/go/user/v1;userv1b\x06proto3"
+	"DeleteUser\x12\x1a.user.v1.DeleteUserRequest\x1a\x1b.user.v1.DeleteUserResponse\"\x1b\x82\xd3\xe4\x93\x02\x15*\x13/v1/users/{user_id}BH\n" +
+	"\x19com.yourorg.newtd.user.v1P\x01Z)go-buf-api-template/gen/go/user/v1;userv1b\x06proto3"
 
 var (
 	file_user_v1_user_proto_rawDescOnce sync.Once

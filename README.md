@@ -59,6 +59,76 @@ buf generate
 | `buf generate` | 生成 Go / OpenAPI 代码 |
 | `buf build` | 编译契约（IDE 报错时先跑它定位问题） |
 
+## 运行服务（Todo 模块）
+
+技术栈：Gin + GORM(MySQL) + golang-migrate + wire + `log/slog`；配置由 `internal/conf/conf.proto` 生成的结构体承载（不使用 Viper）。
+
+```bash
+# 启动：首次会自动建库并执行 db/migrations 下的迁移（禁用 GORM AutoMigrate）
+go run ./cmd/server -conf configs/config.yaml
+
+# 冒烟
+curl -X POST localhost:8080/api/v1/todos -H "Content-Type: application/json" -d '{"title":"buy milk"}'
+curl "localhost:8080/api/v1/todos?page_size=10"
+curl -X PATCH localhost:8080/api/v1/todos/<id> -H "Content-Type: application/json" -d '{"status":3}'
+curl -X DELETE localhost:8080/api/v1/todos/<id>
+```
+
+一个进程同时暴露三种入口（业务实现只有一份，位于 `internal/todo`）：
+
+| 入口 | 配置 | 地址 | 说明 |
+|---|---|---|---|
+| Gin HTTP | `server.addr` | `:8080` | `/api/v1/todos`、`/healthz` |
+| gRPC | `server.grpc_addr` | `:9090` | `todo.v1.TodoService` |
+| grpc-gateway | `server.gateway_addr` | `:8081` | REST `/v1/todos` 反代到 gRPC |
+
+```bash
+# 经 grpc-gateway 调用（走真实 gRPC 链路）
+curl -X POST localhost:8081/v1/todos -H "Content-Type: application/json" -d '{"title":"buy milk"}'
+curl "localhost:8081/v1/todos?pageSize=10"
+curl -X PATCH localhost:8081/v1/todos/<id> -H "Content-Type: application/json" -d '{"status":3}'
+```
+
+- 请求与响应均为 `todo.v1` / `user.v1` 的 Proto JSON（`protojson` 解析，兼容 snake_case 与枚举名）。
+
+### User 模块（`internal/user`）
+
+与 Todo 同构：PO + Service + Gin Handler + gRPC Server 收拢在一个包内，表结构由 `db/migrations/000002_create_users_table.up.sql` 维护。
+
+| 方法 | Gin（:8080） | grpc-gateway（:8081） |
+|---|---|---|
+| Login | `POST /v1/auth/login` | 同左 |
+| CreateUser | `POST /v1/users` | 同左 |
+| ListUsers | `GET /v1/users` | 同左 |
+| GetUser | `GET /v1/users/:user_id` | 同左 |
+| UpdateUser | `PATCH /v1/users/:user_id` | 同左 |
+| DeleteUser | `DELETE /v1/users/:user_id` | 同左 |
+| ChangePassword | `POST /v1/users/:user_id/change-password` | `POST /v1/users/{user_id}:changePassword` |
+| ResetPassword | `POST /v1/users/:user_id/reset-password` | `POST /v1/users/{user_id}:resetPassword` |
+
+> Gin 不支持单路径段内的冒号（一个段只能有一个通配符），故自定义方法在 Gin 侧用 `-password` 后缀；proto 原生 `:changePassword` 形态由 gateway 提供。
+
+- `password_hash` 是服务端独占字段：`ToProto()` 不映射，且网关 marshaler 已关闭 `EmitUnpopulated`，响应中不会出现该字段。
+- JWT 签发为留桩（`Login` 返回 `stub-access-token`），接入认证模块时替换 `Service.Login` 即可。
+- 入参校验来自契约中的 `buf.validate` 规则：gRPC 侧由 protovalidate 拦截器执行（recovery → validation），Gin 侧由 Handler 调用同一引擎；业务代码零手写校验。
+- 重新生成依赖注入代码：`go run github.com/google/wire/cmd/wire@latest ./cmd/server`。
+
+### AIP 标准化能力（`go.einride.tech/aip`）
+
+`todo` 与 `user` 两个模块的 List / Update 均按 Google AIP 实现：
+
+| AIP | 能力 | 用法示例 |
+|---|---|---|
+| AIP-158 | 游标分页 | `?page_size=2&page_token=<nextPageToken>`，token 由 `pagination.ParsePageToken/Next` 生成（含请求校验和，跨页改条件会被拒） |
+| AIP-160 | 通用过滤 | `?filter=status = "DONE" AND title : "meet"`、支持 `= != < <= > >= :` 与 `AND/OR/NOT` |
+| AIP-132 | 多字段排序 | `?order_by=created_at desc, title asc`（字段走白名单校验） |
+| AIP-134 | 增量更新 | `PATCH` 时传 `update_mask`（如 `"title,status"`），仅 mask 内字段被写入 |
+
+- 过滤/排序的"表达式 → SQL"翻译收在 `internal/platform/aipgorm`，两个模块只声明自己的字段 Schema。
+- 可过滤字段是显式的：`aipgorm.Schema` 未声明的字段在 `ParseFilter` 类型检查阶段就被拒绝（400）。
+- 枚举按字符串匹配（`status = "DONE"`），由翻译层解析成枚举号再与整型列比较。
+- 不传 `update_mask` 时仍走原有 PATCH 三态语义（Absent / 传值 / 空串清空），向后兼容。
+
 ## 新项目复用
 
 复制 `buf.yaml`、`buf.gen.yaml`、`proto/<domain>/<version>/*.proto` 到新仓库，替换 `go_package` 中的 `github.com/yourorg/new-td` 占位符，然后执行 `buf dep update && buf lint && buf generate`。完整迁移清单见 [docs/README.md §5](docs/README.md)。

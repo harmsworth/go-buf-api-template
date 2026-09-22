@@ -8,17 +8,23 @@
 
 1. 先改契约再改代码：新接口一律先发**只含 `.proto` 变更**的 MR。
 2. 校验只写在契约里：`buf.validate` / CEL 声明约束，Handler 只装配 protovalidate 拦截器，**禁止手写入参校验**。
-3. 持久层只用 sqlc：转换函数必须纯原生、零反射，**禁止 GORM 与反射依赖**；`password_hash` 等敏感字段严禁映射进 Proto 响应。
+3. 持久层统一用 GORM（本项目不使用 sqlc）：**禁用 AutoMigrate**，表结构走 `db/migrations/*.sql` 由 golang-migrate 执行；转换函数必须纯原生、零反射；`password_hash` 等敏感字段严禁映射进 Proto 响应。
 
 ## 目录地图
 
 ```text
 ├── buf.yaml                  # Buf Workspace v2：modules / deps / lint(STANDARD) / breaking(FILE)
 ├── buf.lock                  # 依赖锁定（buf dep update 产出，必须提交）
-├── buf.gen.yaml              # 生成配置：4 个 remote 插件，版本固定
-├── proto/<domain>/v1/*.proto # API 契约本体（现有 proto/user/v1/user.proto）
+├── buf.gen.yaml              # 生成配置：Go / gRPC / gateway / openapiv2（合并单文件）
+├── buf.gen.config.yaml       # 生成配置：internal/conf/conf.pb.go
+├── api/<domain>/v1/*.proto   # API 契约本体（user/v1、todo/v1）
 ├── gen/go/                   # 生成：Go 结构体 / gRPC Stub / grpc-gateway（必须提交）
-├── gen/openapi/              # 生成：OpenAPI v3 契约文档（必须提交）
+├── gen/openapi/              # 生成：合并后的 openapi.swagger.yaml（必须提交）
+├── cmd/server/               # 服务入口：main.go + wire 依赖注入（Gin + gRPC + grpc-gateway）
+├── configs/config.yaml       # 运行配置（MySQL / Gin / slog）
+├── db/migrations/            # golang-migrate SQL 迁移（嵌入二进制）
+├── internal/platform/        # 基础设施：config / database / logger
+├── internal/todo/            # Todo 业务包（Package by Feature）
 ├── docs/                     # 规范与范式文档（入口 docs/README.md）
 ├── .codebuddy/rules/         # CodeBuddy / WorkBuddy 项目规则（必须提交）
 └── CODEBUDDY.md              # 本文件：AI 全局上下文
@@ -44,7 +50,7 @@ buf build                                   # 编译契约（IDE 大量报错时
 | `.codebuddy/rules/schema-first-overview/RULE.mdc` | 总是加载 | 总纲：仓库结构、六阶段闭环、命令四件套、全局禁令、文档索引 |
 | `.codebuddy/rules/proto-expert/RULE.mdc` | 按需加载 | 写/改 `.proto`、设计 API、添加 `buf.validate` 校验、处理 optional 三态 |
 | `.codebuddy/rules/db-schema-architect/RULE.mdc` | 按需加载 | 由 `.proto` 推导建表 DDL、`up.sql` 迁移、索引与软删除设计 |
-| `.codebuddy/rules/go-service-integrator/RULE.mdc` | 按需加载 | 实现 Service 方法、db→proto 转换、sqlc 调用、`sql.Null*` 处理 |
+| `.codebuddy/rules/go-service-integrator/RULE.mdc` | 按需加载 | 实现 Service 方法、PO→Proto 转换、GORM 查询、gRPC 服务实现 |
 
 ## 参考文档
 

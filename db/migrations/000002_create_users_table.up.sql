@@ -1,0 +1,22 @@
+CREATE TABLE IF NOT EXISTS `users` (
+  `user_id`       VARCHAR(36)   NOT NULL COMMENT '全局唯一 ID（UUID v4），对应 user.v1.User.user_id',
+  `username`      VARCHAR(32)   NOT NULL COMMENT '登录名，3~32 位字母/数字/下划线，业务唯一',
+  `email`         VARCHAR(254)  NOT NULL COMMENT '邮箱，业务唯一',
+  `nickname`      VARCHAR(32)   DEFAULT NULL COMMENT '展示昵称，NULL=未设置（区分于空串）',
+  `status`        TINYINT       NOT NULL DEFAULT 1 COMMENT '账号状态：0=未指定 1=正常 2=停用 3=锁定',
+  `roles`         VARCHAR(255)  NOT NULL DEFAULT '[]' COMMENT '角色列表，JSON 数组（user.v1.UserRole 枚举值）',
+  `phone`         VARCHAR(20)   DEFAULT NULL COMMENT '手机号，NULL=未绑定',
+  `avatar_url`    VARCHAR(2048) DEFAULT NULL COMMENT '头像 URL，NULL=无头像',
+  `password_hash` VARCHAR(72)   NOT NULL DEFAULT '' COMMENT 'bcrypt 密码哈希，服务端独占，严禁对外下发',
+  `last_login_at` DATETIME(3)   NULL DEFAULT NULL COMMENT '最后登录时间，NULL=从未登录',
+  `last_login_ip` VARCHAR(45)   DEFAULT NULL COMMENT '最后登录 IP（IPv4/IPv6）',
+  `created_at`    DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
+  `updated_at`    DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '更新时间',
+  `deleted_at`    DATETIME(3)   NULL DEFAULT NULL COMMENT '软删除时间，NULL=未删除',
+  PRIMARY KEY (`user_id`),
+  UNIQUE KEY `uk_username` (`username`),
+  UNIQUE KEY `uk_email` (`email`),
+  KEY `idx_users_status` (`status`),
+  KEY `idx_users_created_at` (`created_at`),
+  KEY `idx_users_deleted_at` (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户表，对应 user.v1.User';

@@ -17,6 +17,8 @@ message Bootstrap {
 message Server {
   string addr = 1; // HTTP 监听地址，例如 ":8080"
   string mode = 2; // Gin 运行模式："debug" / "release" / "test"
+  string grpc_addr = 3; // gRPC 监听地址，例如 ":9090"
+  string gateway_addr = 4; // grpc-gateway REST 监听地址，例如 ":8081"
 }
 
 // 数据库配置 (GORM)

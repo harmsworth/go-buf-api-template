@@ -22,7 +22,7 @@ import "google/api/annotations.proto";
 import "google/protobuf/field_mask.proto";
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/yourorg/new-td/gen/go/user/v1;userv1"; // TODO: 替换为实际模块路径
+option go_package = "go-buf-api-template/gen/go/user/v1;userv1";
 option java_multiple_files = true;
 option java_package = "com.yourorg.newtd.user.v1";
 
@@ -259,25 +259,37 @@ message GetUserResponse {
   User user = 1 [(buf.validate.field).required = true];
 }
 
+// 分页列出用户。
+// 遵循 AIP-132（List）/ AIP-158（分页）/ AIP-160（过滤）：
+//   - page_size：分页大小，0 表示由服务端决定；
+//   - page_token：不透明游标（由 aip/pagination 生成）；
+//   - filter：过滤表达式，如 `role = "ADMIN" AND username : "ali*"`；
+//   - order_by：排序表达式，如 `created_at desc, username asc`。
 message ListUsersRequest {
-  // 分页大小：三态。未设置（Absent）= 服务端取默认值（如 20）；显式传值 = 精确控制，[1, 100]。
-  optional int32 page_size = 1 [
-    (buf.validate.field).int32.gte = 1,
+  // 分页大小，[0, 100]；0 表示服务端默认值。
+  int32 page_size = 1 [
+    (buf.validate.field).int32.gte = 0,
     (buf.validate.field).int32.lte = 100
   ];
 
   // 分页游标：首页传空串；取上一次响应的 next_page_token。
   string page_token = 2 [(buf.validate.field).string.pattern = "^[A-Za-z0-9_-]*$"];
 
-  // 状态过滤。optional：未设置 = 不过滤（Absent），显式传值 = 精确过滤。
+  // 状态过滤（旧字段，保留兼容）：建议改用 filter。optional：未设置 = 不过滤。
   optional UserStatus status = 3 [(buf.validate.field).enum.defined_only = true];
 
-  // 关键字：对 username / nickname 做模糊匹配。
+  // 关键字：对 username / nickname 做模糊匹配（旧字段，保留兼容）。
   optional string keyword = 4 [(buf.validate.field).string.max_len = 64];
 
   // 是否包含已删除用户（软删除，User.deleted_at 非空）。
   // 默认（未设置/false）= 排除已删除；置 true = 包含，仅管理员/审计场景使用。
   optional bool show_deleted = 5;
+
+  // AIP-160 过滤表达式，如 `status = "ACTIVE" AND username : "alice"`。
+  string filter = 6;
+
+  // AIP-132 排序表达式，如 `created_at desc, username asc`。
+  string order_by = 7;
 }
 
 message ListUsersResponse {

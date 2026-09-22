@@ -21,10 +21,18 @@ provider:
 | `buf.yaml` | Buf Workspace v2：`modules: proto`、`deps`（protovalidate / googleapis）、`lint: STANDARD`、`breaking: FILE` | 必须 |
 | `buf.lock` | 依赖锁定，由 `buf dep update` 产出 | **必须提交** |
 | `buf.gen.yaml` | 生成配置 v2：4 个 remote 插件（版本固定）、`clean: true`、`out: gen/go` 与 `gen/openapi` | 必须 |
-| `proto/<domain>/<version>/*.proto` | API 契约本体（现有 `proto/user/v1/user.proto`） | 必须 |
+| `api/<domain>/<version>/*.proto` | API 契约本体（现有 `api/user/v1/user.proto`、`api/todo/v1/todo.proto`） | 必须 |
 | `gen/go/`、`gen/openapi/` | `buf generate` 产物（CI drift 检查依赖） | **必须提交，禁止 .gitignore** |
+| `internal/conf/conf.proto` | 启动配置契约，由 `buf generate --template buf.gen.config.yaml` 生成 `internal/conf/conf.pb.go` | 必须 |
+| `cmd/server/` | 服务入口：`main.go` + wire 依赖注入（`wire.go` / `wire_gen.go`） | 必须 |
+| `configs/config.yaml` | 运行配置，由 `internal/platform/config` 解析为 `*conf.Bootstrap` | 必须 |
+| `db/migrations/` | golang-migrate 的 `.sql` 迁移文件，嵌入二进制后启动执行 | 必须 |
+| `internal/platform/` | 基础设施：config / database / logger | 必须 |
+| `internal/todo/` | Todo 业务包（Package by Feature：PO + Service + Handler + Router 一体） | 必须 |
 | `docs/` | 规范与范式文档（入口 `docs/README.md`） | 必须 |
 | `.codebuddy/rules/` | CodeBuddy / WorkBuddy 项目规则（本文件所属） | 必须 |
+
+> Go module 名为 `go-buf-api-template`（无组织前缀），所有 `go_package` 必须以此开头，例如 `go-buf-api-template/gen/go/todo/v1;todov1`。
 
 ## 2. 目录与 package 约定（buf lint 强制）
 
@@ -63,7 +71,10 @@ buf breaking --against '.git#branch=main'       # 破坏性变更检查
 ## 5. 全局禁令（评审一律打回）
 
 1. **禁止手写入参校验**：校验全部声明在 `.proto`（`buf.validate` / CEL），Handler 只装配 protovalidate 拦截器。
-2. **禁止引入 GORM 或反射**做持久层 / 转换：只用 sqlc 生成的 `db.Queries`，转换函数必须纯原生、零反射。
+2. **持久层统一使用 GORM**（本项目不使用 sqlc）：
+   - PO 与 `ToProto()` 转换写在 `model.go`，业务与 CRUD 写在 `service.go`，Gin 绑定与响应写在 `handler.go`，gRPC 实现写在 `server.go`。
+   - **禁用 `AutoMigrate`**：表结构一律由 `db/migrations/*.sql` 经 golang-migrate 维护，启动时自动执行。
+   - **禁止用反射**做结构体转换：转换函数必须纯原生、显式赋值。
 3. **禁止零值伪装三态**：`optional` 字段的 Absent / 显式值 / 显式清空三态必须靠指针判空区分，不准用零值代替"未设置"。
 4. **禁止敏感字段下发**：`password_hash` 等服务端独占字段严禁出现在任何 Proto 响应与前端交付物。
 5. **禁止改动 `buf.gen.yaml` 插件版本号**：remote 插件必须固定 `<name>:<version>`，否则 `buf generate` 报错。
@@ -95,7 +106,7 @@ buf breaking --against '.git#branch=main'       # 破坏性变更检查
 |---|---|
 | `proto-expert` | 写/改 `.proto`、设计新 API、添加 `buf.validate` 校验 |
 | `db-schema-architect` | 由 `.proto` 推导建表 DDL / 迁移 SQL |
-| `go-service-integrator` | 实现 Service 方法、db→proto 转换、sqlc 调用 |
+| `go-service-integrator` | 实现 Service 方法、PO→Proto 转换、GORM 查询、gRPC 服务实现 |
 
 常备参考文档（需要时用相对路径读取）：
 

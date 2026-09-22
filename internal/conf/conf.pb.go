@@ -101,8 +101,10 @@ func (x *Bootstrap) GetLog() *Log {
 // HTTP 服务与 Gin 配置
 type Server struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Addr          string                 `protobuf:"bytes,1,opt,name=addr,proto3" json:"addr,omitempty"` // HTTP 监听地址，例如 ":8080"
-	Mode          string                 `protobuf:"bytes,2,opt,name=mode,proto3" json:"mode,omitempty"` // Gin 运行模式："debug" / "release" / "test"
+	Addr          string                 `protobuf:"bytes,1,opt,name=addr,proto3" json:"addr,omitempty"`                                  // HTTP 监听地址，例如 ":8080"
+	Mode          string                 `protobuf:"bytes,2,opt,name=mode,proto3" json:"mode,omitempty"`                                  // Gin 运行模式："debug" / "release" / "test"
+	GrpcAddr      string                 `protobuf:"bytes,3,opt,name=grpc_addr,json=grpcAddr,proto3" json:"grpc_addr,omitempty"`          // gRPC 监听地址，例如 ":9090"
+	GatewayAddr   string                 `protobuf:"bytes,4,opt,name=gateway_addr,json=gatewayAddr,proto3" json:"gateway_addr,omitempty"` // grpc-gateway REST 监听地址，例如 ":8081"
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -147,6 +149,20 @@ func (x *Server) GetAddr() string {
 func (x *Server) GetMode() string {
 	if x != nil {
 		return x.Mode
+	}
+	return ""
+}
+
+func (x *Server) GetGrpcAddr() string {
+	if x != nil {
+		return x.GrpcAddr
+	}
+	return ""
+}
+
+func (x *Server) GetGatewayAddr() string {
+	if x != nil {
+		return x.GatewayAddr
 	}
 	return ""
 }
@@ -430,10 +446,12 @@ const file_conf_conf_proto_rawDesc = "" +
 	"\bdatabase\x18\x02 \x01(\v2\x0e.conf.DatabaseR\bdatabase\x12!\n" +
 	"\x05redis\x18\x03 \x01(\v2\v.conf.RedisR\x05redis\x12\x1b\n" +
 	"\x03jwt\x18\x04 \x01(\v2\t.conf.JWTR\x03jwt\x12\x1b\n" +
-	"\x03log\x18\x05 \x01(\v2\t.conf.LogR\x03log\"0\n" +
+	"\x03log\x18\x05 \x01(\v2\t.conf.LogR\x03log\"p\n" +
 	"\x06Server\x12\x12\n" +
 	"\x04addr\x18\x01 \x01(\tR\x04addr\x12\x12\n" +
-	"\x04mode\x18\x02 \x01(\tR\x04mode\"\xc2\x01\n" +
+	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x1b\n" +
+	"\tgrpc_addr\x18\x03 \x01(\tR\bgrpcAddr\x12!\n" +
+	"\fgateway_addr\x18\x04 \x01(\tR\vgatewayAddr\"\xc2\x01\n" +
 	"\bDatabase\x12\x16\n" +
 	"\x06driver\x18\x01 \x01(\tR\x06driver\x12\x10\n" +
 	"\x03dsn\x18\x02 \x01(\tR\x03dsn\x12\x14\n" +
