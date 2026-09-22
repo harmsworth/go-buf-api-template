@@ -15,6 +15,8 @@
 ├── gen/
 │   ├── go/user/v1/           # 生成：Go 结构体 / gRPC Stub / grpc-gateway 反向代理
 │   └── openapi/user/v1/      # 生成：OpenAPI v3 契约文档（前端/网关交付物）
+├── .codebuddy/rules/         # CodeBuddy / WorkBuddy 项目规则（随仓库提交，团队共享）
+├── CODEBUDDY.md              # AI 全局上下文（CodeBuddy / WorkBuddy 默认加载）
 └── docs/                     # 规范与范式文档（入口见 docs/README.md）
 ```
 
@@ -28,6 +30,8 @@
 | [docs/SCHEMA_FIRST_GUIDE.md](docs/SCHEMA_FIRST_GUIDE.md) | 规范主文档：协作闭环、Zero Value Trap、CI/CD 卡点、版本纪律 |
 | [docs/EXAMPLES.md](docs/EXAMPLES.md) | 代码层范式：拦截器零侵入校验、optional 指针三态处理、测试、常见坑 |
 | [proto/user/v1/user.proto](proto/user/v1/user.proto) | 契约模板本体（含逐条规范注释） |
+| [.codebuddy/rules/](.codebuddy/rules/) | AI 规则（CodeBuddy / WorkBuddy 通用）：总纲 + Proto/DBA/Go 三个专家角色 |
+| [CODEBUDDY.md](CODEBUDDY.md) | AI 全局上下文：铁律、目录地图、命令速查、规则索引 |
 
 ## 快速开始
 

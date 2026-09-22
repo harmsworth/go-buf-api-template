@@ -1,0 +1,106 @@
+---
+description: Schema-First 研发总纲：仓库结构、契约目录与 package 约定、六阶段协作闭环、提交前命令四件套、全局禁令与参考文档索引。任何涉及本仓库的契约变更、代码生成、建表或 Service 实现的任务都先读本规则。
+alwaysApply: true
+enabled: true
+updatedAt: 2026-09-22T00:00:00.000Z
+provider:
+---
+
+# Schema-First 研发总纲（go-buf-api-template）
+
+本仓库是 **Protobuf + Buf 生态的 Schema-First / IDL-First API 工程模板**。核心信条：
+
+> **契约即代码（SSOT）· 校验前移到 IDL · 破坏性变更机器可判 · Handler 层零手写校验。**
+
+`.proto` 是接口的唯一事实来源。数据库表结构、Go 传输层 DTO、OpenAPI 文档全部由契约推导，不允许反向手写。
+
+## 1. 仓库地图
+
+| 路径 | 作用 | 是否入库 |
+|---|---|---|
+| `buf.yaml` | Buf Workspace v2：`modules: proto`、`deps`（protovalidate / googleapis）、`lint: STANDARD`、`breaking: FILE` | 必须 |
+| `buf.lock` | 依赖锁定，由 `buf dep update` 产出 | **必须提交** |
+| `buf.gen.yaml` | 生成配置 v2：4 个 remote 插件（版本固定）、`clean: true`、`out: gen/go` 与 `gen/openapi` | 必须 |
+| `proto/<domain>/<version>/*.proto` | API 契约本体（现有 `proto/user/v1/user.proto`） | 必须 |
+| `gen/go/`、`gen/openapi/` | `buf generate` 产物（CI drift 检查依赖） | **必须提交，禁止 .gitignore** |
+| `docs/` | 规范与范式文档（入口 `docs/README.md`） | 必须 |
+| `.codebuddy/rules/` | CodeBuddy / WorkBuddy 项目规则（本文件所属） | 必须 |
+
+## 2. 目录与 package 约定（buf lint 强制）
+
+| 说明 | 目录 | package |
+|---|---|---|
+| 通用约定 | `proto/<domain>/<version>/` | `<domain>.<version>` |
+| 现有用户域 | `proto/user/v1/` | `user.v1` |
+| 新增任务域示例 | `proto/task/v1/task.proto` | `task.v1` |
+
+- package 与目录必须**强一致**（`PACKAGE_DIRECTORY_MATCH`），违反会被 `buf lint` 直接拒绝。
+- `go_package` 必填，格式 `github.com/yourorg/app/gen/go/<domain>/<version>;<domain><version>`，例如 `github.com/yourorg/new-td/gen/go/user/v1;userv1`。新项目落地时**必须**替换 `yourorg/new-td` 占位符。
+
+## 3. 六阶段协作闭环
+
+| 阶段 | 动作 | 产物 / 命令 |
+|---|---|---|
+| ① API 设计 | 发起**只含 `.proto` 变更**的 MR，校验规则写进契约 | `.proto` diff |
+| ② 本地自检 | 提交前跑命令四件套 | 见 §4 |
+| ③ MR 卡点 | CI 执行 lint + format + breaking + drift，全绿才可合并 | GitHub Actions / GitLab CI |
+| ④ 代码生成 | 合入 main 后生成产物 | `buf generate` |
+| ⑤ Handler 实现 | 只写业务逻辑，**零手写校验** | 见 `docs/EXAMPLES.md` |
+| ⑥ 联调 / 分发 | REST 走 grpc-gateway（已注解），可选发布 BSR | `buf curl` |
+
+## 4. 提交前命令四件套（缺一不可）
+
+```bash
+buf dep update                                  # 改了 deps 后必跑，产出/更新 buf.lock
+buf lint                                        # 契约风格/结构/命名检查（退出码必须为 0）
+buf format --diff --exit-code                   # 格式检查（Windows 缺 diff.exe 可跳过，CI 在 Linux 跑）
+buf generate                                    # 生成 gen/go 与 gen/openapi
+buf breaking --against '.git#branch=main'       # 破坏性变更检查
+```
+
+常用补充命令：`buf build`（编译契约；**IDE 大量报错时先跑它定位问题**）、`buf curl`（调试 REST）。
+
+## 5. 全局禁令（评审一律打回）
+
+1. **禁止手写入参校验**：校验全部声明在 `.proto`（`buf.validate` / CEL），Handler 只装配 protovalidate 拦截器。
+2. **禁止引入 GORM 或反射**做持久层 / 转换：只用 sqlc 生成的 `db.Queries`，转换函数必须纯原生、零反射。
+3. **禁止零值伪装三态**：`optional` 字段的 Absent / 显式值 / 显式清空三态必须靠指针判空区分，不准用零值代替"未设置"。
+4. **禁止敏感字段下发**：`password_hash` 等服务端独占字段严禁出现在任何 Proto 响应与前端交付物。
+5. **禁止改动 `buf.gen.yaml` 插件版本号**：remote 插件必须固定 `<name>:<version>`，否则 `buf generate` 报错。
+6. **禁止把 `gen/` 与 `buf.lock` 加入 `.gitignore`**：CI drift 检查依赖它们。
+
+## 6. 三条易踩的坑
+
+- **Zero Value Trap**：`optional string nickname` 的"未设置"与"空串"语义不同。支持**显式清空**的字段**禁用** `min_len` / `email` 等拒绝空串的规则，必须改用放行空串的 pattern，如 `^(|.{2,32})$`。
+- **RE2 限制**：重复计数上限 1000（`{1,2048}` 无法编译 → 长度交给 `max_len`）；不支持 lookaround 断言（密码复杂度必须走 message 级 CEL，见 `proto/user/v1/user.proto` 的 `CreateUserRequest`）。
+- **枚举无法表达"清空"**：枚举字段只有两态（Absent = 不变 / 显式值 = 变更），恢复默认请显式传业务态。
+
+## 7. 已验证版本组合（不要随意升降级）
+
+| 组件 | 版本 |
+|---|---|
+| Buf CLI | 1.72.0 |
+| protoc-gen-go（remote） | v1.36.12 |
+| protoc-gen-go-grpc（remote） | v1.6.2 |
+| grpc-gateway 生成插件 / 运行时 | v2.30.0 |
+| openapiv3（remote） | v2.30.0 |
+| go-grpc-middleware/v2 | v2.3.4 |
+| protovalidate Go 运行时 | `buf.build/go/protovalidate@latest` |
+
+## 8. 规则与文档索引
+
+按需加载的专家规则（触发时自动读取）：
+
+| 规则 | 触发场景 |
+|---|---|
+| `proto-expert` | 写/改 `.proto`、设计新 API、添加 `buf.validate` 校验 |
+| `db-schema-architect` | 由 `.proto` 推导建表 DDL / 迁移 SQL |
+| `go-service-integrator` | 实现 Service 方法、db→proto 转换、sqlc 调用 |
+
+常备参考文档（需要时用相对路径读取）：
+
+- `docs/SCHEMA_FIRST_GUIDE.md` — 规范主文档：协作闭环、Zero Value Trap、CI/CD 卡点、版本纪律
+- `docs/EXAMPLES.md` — 代码层范式：拦截器装配、`optional` 三态读写、测试、常见坑
+- `docs/README.md` — 导航、快速开始、新项目迁移清单、FAQ
+- `proto/user/v1/user.proto` — 契约模板本体（含逐条规范注释），写新契约前先读它
+- `docs/Proto Expert.md`、`docs/DB Schema Architect.md`、`docs/Go Service Integrator.md` — 三个专家角色的原始提示词，规则是其结构化升级版

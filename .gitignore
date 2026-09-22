@@ -5,6 +5,8 @@
 *.swo
 .trae/*
 !.trae/rules/
+.codebuddy/*
+!.codebuddy/rules/
 
 # OS
 .DS_Store
