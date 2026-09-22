@@ -1,0 +1,88 @@
+name: quality-gate
+
+on:
+  pull_request:
+    paths:
+      - "api/**/*.proto"
+      - "internal/conf/conf.proto"
+      - "buf.yaml"
+      - "buf.gen.yaml"
+      - "buf.gen.config.yaml"
+      - "buf.lock"
+      - "gen/**"
+      - "go.mod"
+      - "go.sum"
+      - "cmd/**"
+      - "internal/**"
+      - "db/migrations/**"
+      - ".github/workflows/quality-gate.yml"
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  buf:
+    name: contract quality gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # merge-base 对比需要完整提交历史
+
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Lint
+        run: buf lint
+
+      - name: Format check
+        run: buf format --exit-code
+
+      - name: Breaking change check (vs merge-base)
+        if: github.event_name == 'pull_request'
+        run: buf breaking --against '.git#commit=${{ github.event.pull_request.base.sha }}'
+
+      - name: Dependency lock drift check
+        run: |
+          buf dep update
+          git diff --exit-code -- buf.lock \
+            || (echo "::error::buf.lock 已过期，请执行 buf dep update 并提交" && exit 1)
+
+      - name: Generated code drift check
+        run: |
+          buf generate
+          buf generate --template buf.gen.config.yaml
+          git diff --exit-code -- gen internal/conf \
+            || (echo "::error::生成代码与 .proto 不同步，请执行 buf generate 并提交" && exit 1)
+
+  go:
+    name: go build & vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Gofmt
+        run: |
+          out=$(gofmt -l cmd internal db)
+          if [ -n "$out" ]; then
+            echo "::error::以下文件未格式化:"
+            echo "$out"
+            exit 1
+          fi

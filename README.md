@@ -10,8 +10,9 @@
 ├── buf.yaml                  # Buf Workspace：Module / BSR 依赖 / lint(STANDARD) / breaking(FILE)
 ├── buf.lock                  # 依赖锁定（buf dep update 产出，必须提交）
 ├── buf.gen.yaml              # 代码生成配置：remote plugins 版本锁定，无需本地装 protoc
-├── proto/
-│   └── user/v1/user.proto    # 契约模板：UserService + protovalidate 校验规则
+├── api/
+│   ├── user/v1/user.proto    # 用户域契约：8 个 RPC + protovalidate 校验规则
+│   └── todo/v1/todo.proto    # 待办域契约：CRUD + google.api.http 注解
 ├── gen/
 │   ├── go/user/v1/           # 生成：Go 结构体 / gRPC Stub / grpc-gateway 反向代理
 │   └── openapi/user/v1/      # 生成：OpenAPI v3 契约文档（前端/网关交付物）
@@ -29,7 +30,8 @@
 | [docs/README.md](docs/README.md) | 入口导航：阅读顺序、10 分钟快速开始、新项目迁移清单、FAQ |
 | [docs/SCHEMA_FIRST_GUIDE.md](docs/SCHEMA_FIRST_GUIDE.md) | 规范主文档：协作闭环、Zero Value Trap、CI/CD 卡点、版本纪律 |
 | [docs/EXAMPLES.md](docs/EXAMPLES.md) | 代码层范式：拦截器零侵入校验、optional 指针三态处理、测试、常见坑 |
-| [proto/user/v1/user.proto](proto/user/v1/user.proto) | 契约模板本体（含逐条规范注释） |
+| [api/user/v1/user.proto](api/user/v1/user.proto) | 契约模板本体（含逐条规范注释） |
+| [api/todo/v1/todo.proto](api/todo/v1/todo.proto) | 待办域契约（含 google.api.http 与 update_mask） |
 | [.codebuddy/rules/](.codebuddy/rules/) | AI 规则（CodeBuddy / WorkBuddy 通用）：总纲 + Proto/DBA/Go 三个专家角色 |
 | [CODEBUDDY.md](CODEBUDDY.md) | AI 全局上下文：铁律、目录地图、命令速查、规则索引 |
 
@@ -43,11 +45,16 @@ buf dep update
 
 # 2) 契约质量检查
 buf lint
-buf format --diff --exit-code
+buf format --exit-code
 
-# 3) 生成代码 → gen/go/user/v1/ 与 gen/openapi/user/v1/
+# 3) 生成代码 → gen/go/{user,todo}/v1/ 与 gen/openapi/openapi.swagger.yaml
 buf generate
+
+# 4) 生成配置结构体 → internal/conf/conf.pb.go
+buf generate --template buf.gen.config.yaml
 ```
+
+等价的 `make` 别名：`make deps` / `make proto-lint` / `make gen` / `make build` / `make run` / `make check`，`make help` 查看全部。
 
 ## 日常命令速查
 
@@ -55,9 +62,12 @@ buf generate
 |---|---|
 | `buf dep update` | 更新依赖锁定（改了 `deps` 后必跑） |
 | `buf lint` | 契约风格/结构/校验规则检查 |
+| `buf format --exit-code` | 契约格式检查（未格式化则非零退出） |
 | `buf breaking --against '.git#branch=main'` | 破坏性变更检查（对 main） |
-| `buf generate` | 生成 Go / OpenAPI 代码 |
+| `buf generate` | 生成 Go / gateway / Swagger 代码 |
+| `buf generate --template buf.gen.config.yaml` | 生成 `internal/conf/conf.pb.go` |
 | `buf build` | 编译契约（IDE 报错时先跑它定位问题） |
+| `make check` | 提交前全量自检（format + lint + breaking + generate + vet + build） |
 
 ## 运行服务（Todo 模块）
 
@@ -134,7 +144,7 @@ curl -X PATCH localhost:8081/v1/todos/<id> -H "Content-Type: application/json" -
 
 ## 新项目复用
 
-复制 `buf.yaml`、`buf.gen.yaml`、`proto/<domain>/<version>/*.proto` 到新仓库，替换 `go_package` 中的 `github.com/yourorg/new-td` 占位符，然后执行 `buf dep update && buf lint && buf generate`。完整迁移清单见 [docs/README.md §5](docs/README.md)。
+复制 `buf.yaml`、`buf.gen.yaml`、`buf.gen.config.yaml`、`api/<domain>/<version>/*.proto` 到新仓库，把 `go_package` 中的 `go-buf-api-template` 替换为你的 module 名，然后执行 `buf dep update && buf lint && buf generate`。完整迁移清单见 [docs/README.md §5](docs/README.md)。
 
 ## 已验证版本
 
