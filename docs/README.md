@@ -20,6 +20,9 @@
 | `README.md`（本文档） | 导航 + 快速开始 + 迁移清单 |
 | `SCHEMA_FIRST_GUIDE.md` | 规范主文档：协作闭环、Zero Value Trap、CI/CD 卡点、版本纪律 |
 | `EXAMPLES.md` | 代码层范式：拦截器零侵入校验、`optional` 三态、AIP 用法、测试、FAQ |
+| `planning/` | **规划与执行看板**（会随进度变化）：优化清单 + wire 接线方案；入口 [planning/README.md](./planning/README.md) |
+
+> `docs/` 前三份是**规范**（该怎么做，落定后稳定）；`planning/` 是**待办与方案**（what / how，带状态标注，会持续更新）。
 
 ### 仓库关键文件
 
@@ -157,7 +160,7 @@ go run ./cmd/server -conf configs/config.yaml
 | 占位符 | 出现位置 | 替换为 |
 |---|---|---|
 | `go-buf-api-template` | 各 `.proto` 的 `go_package`、Go import | 你的 module 名（**本仓库已用此名，无需再改**） |
-| `com.yourorg.newtd.*` | `api/user/v1/user.proto` 的 `java_package` | 你的 Java 包名（或删除 `java_*` 选项） |
+| `com.example.gobuf.*` | `api/user/v1/user.proto` 的 `java_package` | 你的 Java 包名（或删除 `java_*` 选项） |
 | `;userv1` / `;todov1` | `go_package` 末尾别名 | 按域改名，如 `;orderv1` |
 | `root:123456@tcp(localhost:3306)/todo_db` | `configs/config.yaml` | 你的 MySQL DSN（**保留 `loc=UTC`**） |
 
@@ -195,7 +198,7 @@ go mod tidy && go build ./...
 - [ ] `buf dep update` 成功，`buf.lock` 已提交
 - [ ] `buf lint` 全绿
 - [ ] `buf generate` 产出 `gen/`；`--template buf.gen.config.yaml` 产出 `internal/conf/conf.pb.go`
-- [ ] 占位符已全部替换（`grep -rn "yourorg"` 应为空）
+- [ ] 占位符已全部替换（`grep -rn "com.example.gobuf"` 应为空）
 - [ ] `go build ./...` 通过
 - [ ] CI workflow 已合入，required check 生效
 - [ ] `gen/` 与 `internal/conf/conf.pb.go` 已提交进版本控制（未进 `.gitignore`）

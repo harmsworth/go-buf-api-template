@@ -286,3 +286,66 @@ func enumNumber(et protoreflect.EnumType, name string) (int32, bool) {
 	}
 	return 0, false
 }
+
+// ListQuery 是列表查询的统一入参契约。
+//
+// 业务包自己的 ListQuery 只要实现下面四个方法，就能被 List 消费；
+// 不必（也不应）依赖 proto 请求类型，便于单测直接构造。
+type ListQuery interface {
+	filtering.Request // GetFilter() string
+	ordering.Request  // GetOrderBy() string
+	GetOffset() int
+	GetLimit() int
+}
+
+// MustDeclarations 构建过滤表达式的类型声明。
+//
+// 与 regexp.MustCompile 同理：Schema 是编译期常量，构造失败只可能是代码写错，
+// 因此在包初始化阶段直接 panic。相比"每个请求都背一段 error 分支 + sync.Once 缓存"
+// 的防御式写法，少 14 行样板，且错误在进程启动时即暴露（而不是第一个 List 请求）。
+func MustDeclarations(schema Schema) *filtering.Declarations {
+	decls, err := Declarations(schema)
+	if err != nil {
+		panic("aipgorm: invalid query schema: " + err.Error())
+	}
+	return decls
+}
+
+// List 执行标准 AIP 列表查询骨架，把此前每个仓储重复一遍的
+//
+//	ApplyFilter → ApplyOrderBy → Offset/Limit → Find
+//
+// 收敛为一次调用（并顺带统一了"旧字段兼容条件必须加在 AIP 过滤之前"的次序）。
+//
+// withDB 用于在 AIP 过滤**之前**追加业务专属条件（status 定值、keyword LIKE、
+// Unscoped 等）。顺序有语义意义：这些条件必须先生效，否则 AIP 表达式的作用域会变。
+//
+// 注意：AIP 表达式解析错误由本函数原样返回，是否包装成业务侧的 ErrInvalidArgument
+// 由调用方决定（各业务包的包装粒度和文案不同，不做代劳）。
+func List[T any](
+	db *gorm.DB,
+	q ListQuery,
+	decls *filtering.Declarations,
+	schema Schema,
+	fallbackOrder string,
+	withDB ...func(*gorm.DB) *gorm.DB,
+) ([]T, error) {
+	tx := db
+	for _, fn := range withDB {
+		tx = fn(tx)
+	}
+
+	tx, err := ApplyFilter(tx, q, decls, schema)
+	if err != nil {
+		return nil, err
+	}
+	if tx, err = ApplyOrderBy(tx, q, schema, fallbackOrder); err != nil {
+		return nil, err
+	}
+
+	var rows []T
+	if err := tx.Offset(q.GetOffset()).Limit(q.GetLimit()).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}

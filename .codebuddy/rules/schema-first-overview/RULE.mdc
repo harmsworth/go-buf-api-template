@@ -27,8 +27,8 @@ provider:
 | `cmd/server/` | 服务入口：`main.go` + wire 依赖注入（`wire.go` / `wire_gen.go`） | 必须 |
 | `configs/config.yaml` | 运行配置，由 `internal/platform/config` 解析为 `*conf.Bootstrap` | 必须 |
 | `db/migrations/` | golang-migrate 的 `.sql` 迁移文件，嵌入二进制后启动执行 | 必须 |
-| `internal/platform/` | 基础设施：config / database / logger | 必须 |
-| `internal/todo/` | Todo 业务包（Package by Feature：PO + Service + Handler + Router 一体） | 必须 |
+| `internal/platform/` | 基础设施：config / database / logger / aipgorm / errorsx / httpx / grpcx | 必须 |
+| `internal/todo/`、`internal/user/` | 业务包（Package by Feature 五件套：`model.go` + `repository.go` + `service.go` + `handler.go` + `server.go`） | 必须 |
 | `docs/` | 规范与范式文档（入口 `docs/README.md`） | 必须 |
 | `.codebuddy/rules/` | CodeBuddy / WorkBuddy 项目规则（本文件所属） | 必须 |
 
@@ -71,10 +71,19 @@ buf breaking --against '.git#branch=main'       # 破坏性变更检查
 ## 5. 全局禁令（评审一律打回）
 
 1. **禁止手写入参校验**：校验全部声明在 `.proto`（`buf.validate` / CEL），Handler 只装配 protovalidate 拦截器。
-2. **持久层统一使用 GORM**（本项目不使用 sqlc）：
-   - PO 与 `ToProto()` 转换写在 `model.go`，业务与 CRUD 写在 `service.go`，Gin 绑定与响应写在 `handler.go`，gRPC 实现写在 `server.go`。
+2. **持久层统一使用 GORM**（本项目不使用 sqlc），业务包内固定五件套：
+   - `model.go`：GORM PO + `ToProto()` + `applyUpdate()`（三态 / FieldMask）。
+   - `repository.go`：GORM 查询实现（**只写结构体与方法，不定义接口**；导出 `NewRepository(db) Repository` 返回接口）。
+   - `service.go`：业务规则；**在此声明 `Repository` 接口**（消费方视角，符合 "accept interfaces, return structs"），
+     方法签名与 `repository.go` 一一对应。生产注入 GORM 实现，单测注入 fake。
+     领域错误也用 `errorsx.New` 在此声明，HTTP 状态码与 gRPC code 一次写清。
+   - `handler.go`：Gin 绑定、路由注册（`RegisterRoutes`），编解码与校验一律走 `internal/platform/httpx`。
+   - `server.go`：gRPC 实现 + 实现 `grpcx.Registrar`（`RegisterGRPC` / `RegisterGateway`）；**不写错误映射**，
+     由 `errorsx.UnaryServerInterceptor` 统一转换。
    - **禁用 `AutoMigrate`**：表结构一律由 `db/migrations/*.sql` 经 golang-migrate 维护，启动时自动执行。
    - **禁止用反射**做结构体转换：转换函数必须纯原生、显式赋值。
+   - **禁止**在业务包内重复实现 platform 已有能力（protojson 读写、错误映射、AIP 翻译、路由/服务注册契约）。
+   - **不为抽象而抽象**：只有当需要"单测替换"或"第二种存储实现"时才引入接口；不要预先铺 `internal/repository/` 这类跨包层。
 3. **禁止零值伪装三态**：`optional` 字段的 Absent / 显式值 / 显式清空三态必须靠指针判空区分，不准用零值代替"未设置"。
 4. **禁止敏感字段下发**：`password_hash` 等服务端独占字段严禁出现在任何 Proto 响应与前端交付物。
 5. **禁止改动 `buf.gen.yaml` 插件版本号**：remote 插件必须固定 `<name>:<version>`，否则 `buf generate` 报错。

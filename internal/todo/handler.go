@@ -1,18 +1,13 @@
 package todo
 
 import (
-	"errors"
-	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
 
 	todov1 "go-buf-api-template/gen/go/todo/v1"
+	"go-buf-api-template/internal/platform/httpx"
 
-	"buf.build/go/protovalidate"
 	"github.com/gin-gonic/gin"
-	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
 )
 
 // Handler 是 Todo 模块的 Gin HTTP 处理层：解析请求 → 调用 Service → 输出 Proto JSON。
@@ -22,172 +17,115 @@ import (
 type Handler struct {
 	svc      *Service
 	log      *slog.Logger
-	validate protovalidate.Validator
+	validate httpx.Validator
 }
 
 // NewHandler 构造函数，供 wire 注入。
-func NewHandler(svc *Service, log *slog.Logger) (*Handler, error) {
-	v, err := protovalidate.New()
-	if err != nil {
-		return nil, err
+//
+// 校验器由 wire 注入（进程内共享一份），因此本函数不再自己构造 protovalidate，
+// 也不再需要返回 error —— wire 图里少一个错误分支。
+func NewHandler(svc *Service, validate httpx.Validator, log *slog.Logger) *Handler {
+	return &Handler{svc: svc, log: log, validate: validate}
+}
+
+// 编译期断言：确保 Handler 始终满足宿主的路由注册契约。
+var _ httpx.Registrar = (*Handler)(nil)
+
+// RegisterRoutes 把 Todo 模块的路由注册到给定的 Gin 路由（Engine 或 RouterGroup）。
+//
+// 原 router.go 的内容并入此处：它与 Handler 是严格一对一关系，
+// 单独成文件只多一个 package 声明与 import block，没有隔离收益。
+func (h *Handler) RegisterRoutes(r gin.IRouter) {
+	g := r.Group("/api/v1/todos")
+	{
+		g.POST("", h.Create)
+		g.GET("", h.List)
+		g.GET("/:id", h.Get)
+		g.PATCH("/:id", h.Update)
+		g.DELETE("/:id", h.Delete)
 	}
-	return &Handler{svc: svc, log: log, validate: v}, nil
 }
 
 // Create 处理 POST /api/v1/todos
 func (h *Handler) Create(c *gin.Context) {
 	var req todov1.CreateTodoRequest
-	if !h.readProto(c, &req) || !h.validateReq(c, &req) {
+	if !httpx.ReadBody(c, &req) || !httpx.Validate(c, h.validate, &req) {
 		return
 	}
 	h.log.Debug("create todo", "title", req.GetTitle())
 
 	todo, err := h.svc.Create(c.Request.Context(), &req)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, "create todo failed")
+		httpx.WriteMapped(c, h.log, err)
 		return
 	}
-	writeProto(c, http.StatusCreated, &todov1.CreateTodoResponse{Todo: todo})
+	httpx.WriteProto(c, http.StatusCreated, &todov1.CreateTodoResponse{Todo: todo})
 }
 
 // Get 处理 GET /api/v1/todos/:id
 func (h *Handler) Get(c *gin.Context) {
 	req := &todov1.GetTodoRequest{Id: c.Param("id")}
-	if !h.validateReq(c, req) {
+	if !httpx.Validate(c, h.validate, req) {
 		return
 	}
 
 	todo, err := h.svc.Get(c.Request.Context(), req.GetId())
 	if err != nil {
-		writeStatusError(c, err)
+		httpx.WriteMapped(c, h.log, err)
 		return
 	}
-	writeProto(c, http.StatusOK, &todov1.GetTodoResponse{Todo: todo})
+	httpx.WriteProto(c, http.StatusOK, &todov1.GetTodoResponse{Todo: todo})
 }
 
 // List 处理 GET /api/v1/todos
+//
+// query 绑定交给 httpx.BindQuery（与 gateway 入口共用 grpc-gateway 的解析器），
+// 因此 page_size / status / filter / order_by 无需逐个手写解析，枚举名也可直接使用。
 func (h *Handler) List(c *gin.Context) {
-	req := &todov1.ListTodosRequest{
-		PageToken: c.DefaultQuery("page_token", ""),
-		// AIP-160 过滤表达式 / AIP-132 排序表达式
-		Filter:  c.DefaultQuery("filter", ""),
-		OrderBy: c.DefaultQuery("order_by", ""),
-	}
-	if v := c.Query("page_size"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			writeError(c, http.StatusBadRequest, "page_size must be an integer")
-			return
-		}
-		req.PageSize = int32(n)
-	}
-	if v := c.Query("status"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			writeError(c, http.StatusBadRequest, "status must be an integer")
-			return
-		}
-		req.Status = todov1.TodoStatus(n).Enum()
-	}
-	if !h.validateReq(c, req) {
+	req := &todov1.ListTodosRequest{}
+	if !httpx.BindQuery(c, req) || !httpx.Validate(c, h.validate, req) {
 		return
 	}
 
 	todos, next, err := h.svc.List(c.Request.Context(), req)
 	if err != nil {
-		// filter / order_by / page_token 非法 → 400，其余 → 500
-		writeStatusError(c, err)
+		// filter / order_by / page_token 非法 → 400，其余 → 错误声明处固化的状态码
+		httpx.WriteMapped(c, h.log, err)
 		return
 	}
-	writeProto(c, http.StatusOK, &todov1.ListTodosResponse{Todos: todos, NextPageToken: next})
+	httpx.WriteProto(c, http.StatusOK, &todov1.ListTodosResponse{Todos: todos, NextPageToken: next})
 }
 
 // Update 处理 PATCH /api/v1/todos/:id
 func (h *Handler) Update(c *gin.Context) {
 	var req todov1.UpdateTodoRequest
 	// 先读 body，再补路径参数，最后统一校验：顺序颠倒会让 id 的 uuid 规则对空值报错。
-	if !h.readProto(c, &req) {
+	if !httpx.ReadBody(c, &req) {
 		return
 	}
 	req.Id = c.Param("id")
-	if !h.validateReq(c, &req) {
+	if !httpx.Validate(c, h.validate, &req) {
 		return
 	}
 
 	todo, err := h.svc.Update(c.Request.Context(), &req)
 	if err != nil {
-		writeStatusError(c, err)
+		httpx.WriteMapped(c, h.log, err)
 		return
 	}
-	writeProto(c, http.StatusOK, &todov1.UpdateTodoResponse{Todo: todo})
+	httpx.WriteProto(c, http.StatusOK, &todov1.UpdateTodoResponse{Todo: todo})
 }
 
 // Delete 处理 DELETE /api/v1/todos/:id
 func (h *Handler) Delete(c *gin.Context) {
 	req := &todov1.DeleteTodoRequest{Id: c.Param("id")}
-	if !h.validateReq(c, req) {
+	if !httpx.Validate(c, h.validate, req) {
 		return
 	}
 
 	if err := h.svc.Delete(c.Request.Context(), req.GetId()); err != nil {
-		writeStatusError(c, err)
+		httpx.WriteMapped(c, h.log, err)
 		return
 	}
-	writeProto(c, http.StatusOK, &todov1.DeleteTodoResponse{Id: req.GetId()})
-}
-
-// readProto 读取请求体并用 protojson 解析（兼容 snake_case / lowerCamel 字段名与枚举名）。
-// 只做反序列化，不执行校验——校验由调用方在补全路径参数后再触发。
-func (h *Handler) readProto(c *gin.Context, msg proto.Message) bool {
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		writeError(c, http.StatusBadRequest, "read request body failed")
-		return false
-	}
-	if len(body) == 0 {
-		body = []byte("{}")
-	}
-	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
-	if err := opts.Unmarshal(body, msg); err != nil {
-		writeError(c, http.StatusBadRequest, "invalid request body: "+err.Error())
-		return false
-	}
-	return true
-}
-
-// validateReq 执行契约中声明的 buf.validate 规则。
-func (h *Handler) validateReq(c *gin.Context, msg proto.Message) bool {
-	if err := h.validate.Validate(msg); err != nil {
-		writeError(c, http.StatusBadRequest, err.Error())
-		return false
-	}
-	return true
-}
-
-// writeProto 以 Proto JSON 输出响应。
-func writeProto(c *gin.Context, status int, msg proto.Message) {
-	data, err := protojson.Marshal(msg)
-	if err != nil {
-		writeError(c, http.StatusInternalServerError, "marshal response failed")
-		return
-	}
-	c.Data(status, "application/json", data)
-}
-
-// writeError 输出简单错误响应。
-func writeError(c *gin.Context, status int, message string) {
-	c.JSON(status, gin.H{"code": status, "message": message})
-}
-
-// writeStatusError 将领域错误映射为 HTTP 状态码。
-func writeStatusError(c *gin.Context, err error) {
-	switch {
-	case errors.Is(err, ErrNotFound):
-		writeError(c, http.StatusNotFound, err.Error())
-	case errors.Is(err, ErrInvalidArgument):
-		// filter / order_by / page_token 非法
-		writeError(c, http.StatusBadRequest, err.Error())
-	default:
-		writeError(c, http.StatusInternalServerError, "internal server error")
-	}
+	httpx.WriteProto(c, http.StatusOK, &todov1.DeleteTodoResponse{Id: req.GetId()})
 }

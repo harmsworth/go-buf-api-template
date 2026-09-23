@@ -253,7 +253,7 @@ make check
 ```
 
 > 本仓库 module 名为 **`go-buf-api-template`**（不带 `github.com/` 前缀），所有 `go_package` 与 Go import 均以此开头。
-> 迁移到新项目时全局替换该名，并替换 `api/user/v1/user.proto` 中仍为占位符的 `java_package = "com.yourorg.newtd.user.v1"`。
+> 迁移到新项目时全局替换该名，并替换 `api/user/v1/user.proto` 中的 `java_package = "com.example.gobuf.user.v1"`（同样为占位符，改为你的 Java 包名或直接删除 `java_*` 选项）。
 
 ---
 

@@ -77,7 +77,7 @@ syntax = "proto3";
 
 package user.v1;
 
-option go_package = "github.com/yourorg/app/gen/go/user/v1;userv1";
+option go_package = "go-buf-api-template/gen/go/user/v1;userv1";
 
 import "buf/validate/validate.proto";
 import "google/protobuf/timestamp.proto";
@@ -243,8 +243,8 @@ import (
 	"context"
 	"database/sql"
 
-	userv1 "github.com/yourorg/app/gen/go/user/v1"
-	"github.com/yourorg/app/internal/db"
+	userv1 "go-buf-api-template/gen/go/user/v1"
+	"go-buf-api-template/internal/db"
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -322,8 +322,8 @@ package handler
 import (
 	"context"
 
-	userv1 "github.com/yourorg/app/gen/go/user/v1"
-	"github.com/yourorg/app/internal/service"
+	userv1 "go-buf-api-template/gen/go/user/v1"
+	"go-buf-api-template/internal/service"
 )
 
 type UserHandler struct {

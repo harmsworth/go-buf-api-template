@@ -109,18 +109,20 @@ curl -X PATCH localhost:8081/v1/todos/<id> -H "Content-Type: application/json" -
 
 与 Todo 同构：PO + Service + Gin Handler + gRPC Server 收拢在一个包内，表结构由 `db/migrations/000002_create_users_table.up.sql` 维护。
 
-| 方法 | Gin（:8080） | grpc-gateway（:8081） |
+| 方法 | Gin（:8080，前缀 `/api/v1`） | grpc-gateway（:8081，前缀 `/v1`） |
 |---|---|---|
-| Login | `POST /v1/auth/login` | 同左 |
-| CreateUser | `POST /v1/users` | 同左 |
-| ListUsers | `GET /v1/users` | 同左 |
-| GetUser | `GET /v1/users/:user_id` | 同左 |
-| UpdateUser | `PATCH /v1/users/:user_id` | 同左 |
-| DeleteUser | `DELETE /v1/users/:user_id` | 同左 |
-| ChangePassword | `POST /v1/users/:user_id/change-password` | `POST /v1/users/{user_id}:changePassword` |
-| ResetPassword | `POST /v1/users/:user_id/reset-password` | `POST /v1/users/{user_id}:resetPassword` |
+| Login | `POST /api/v1/auth/login` | `POST /v1/auth/login` |
+| CreateUser | `POST /api/v1/users` | `POST /v1/users` |
+| ListUsers | `GET /api/v1/users` | `GET /v1/users` |
+| GetUser | `GET /api/v1/users/:user_id` | `GET /v1/users/{user_id}` |
+| UpdateUser | `PATCH /api/v1/users/:user_id` | `PATCH /v1/users/{user_id}` |
+| DeleteUser | `DELETE /api/v1/users/:user_id` | `DELETE /v1/users/{user_id}` |
+| ChangePassword | `POST /api/v1/users/:user_id/change-password` | `POST /v1/users/{user_id}:changePassword` |
+| ResetPassword | `POST /api/v1/users/:user_id/reset-password` | `POST /v1/users/{user_id}:resetPassword` |
 
-> Gin 不支持单路径段内的冒号（一个段只能有一个通配符），故自定义方法在 Gin 侧用 `-password` 后缀；proto 原生 `:changePassword` 形态由 gateway 提供。
+> - Gin 侧统一用 `/api/v1` 前缀（与 `/api/v1/todos` 对齐）；gateway 侧沿用 proto 注解里的 `/v1`。
+> - Gin 不支持单路径段内的冒号（一个段只能有一个通配符），故自定义方法在 Gin 侧用 `-password` 后缀；proto 原生 `:changePassword` 形态由 gateway 提供。
+> - **两个入口的 query 绑定语义已统一**：Gin 侧经 `httpx.BindQuery` 复用 grpc-gateway 的解析器，因此枚举名（`status=USER_STATUS_ACTIVE`）、bool 标准写法（`show_deleted=TRUE`）、lowerCamel 字段名（`pageSize`）两边一致；已知字段的非法值返回 400，未知参数被忽略（与 gateway 同源行为）。
 
 - `password_hash` 是服务端独占字段：`ToProto()` 不映射，且网关 marshaler 已关闭 `EmitUnpopulated`，响应中不会出现该字段。
 - JWT 签发为留桩（`Login` 返回 `stub-access-token`），接入认证模块时替换 `Service.Login` 即可。

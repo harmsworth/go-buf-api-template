@@ -20,11 +20,12 @@
 ├── api/<domain>/v1/*.proto   # API 契约本体（user/v1、todo/v1）
 ├── gen/go/                   # 生成：Go 结构体 / gRPC Stub / grpc-gateway（必须提交）
 ├── gen/openapi/              # 生成：合并后的 openapi.swagger.yaml（必须提交）
-├── cmd/server/               # 服务入口：main.go + wire 依赖注入（Gin + gRPC + grpc-gateway）
+├── cmd/server/               # 服务入口：main.go（启动）+ providers.go（唯一接线点）+ app.go（生命周期）+ wire
 ├── configs/config.yaml       # 运行配置（MySQL / Gin / slog）
 ├── db/migrations/            # golang-migrate SQL 迁移（嵌入二进制）
-├── internal/platform/        # 基础设施：config / database / logger
-├── internal/todo/            # Todo 业务包（Package by Feature）
+├── internal/platform/        # 基础设施：config / database / logger / aipgorm / errorsx / httpx / grpcx
+├── internal/todo/            # Todo 业务包（Package by Feature：model / repository / service / handler / server）
+├── internal/user/            # User 业务包（与 todo 同构）
 ├── docs/                     # 规范与范式文档（入口 docs/README.md）
 ├── .codebuddy/rules/         # CodeBuddy / WorkBuddy 项目规则（必须提交）
 └── CODEBUDDY.md              # 本文件：AI 全局上下文
@@ -39,7 +40,24 @@ buf format --diff --exit-code               # 格式检查
 buf generate                                # 生成 Go / gateway / Swagger 代码
 buf breaking --against '.git#branch=main'   # 破坏性变更检查
 buf build                                   # 编译契约（IDE 大量报错时先跑它）
+
+make wire                                   # 重新生成 wire_gen.go（wire 版本由 go.mod 的 tool 指令锁定）
+make wire-drift                             # 校验 wire_gen.go 与 wire.go 是否同步（CI 卡点）
+make test                                   # 运行单元测试（含持久层 DryRun 测试）
+make check                                  # 提交前全量自检
 ```
+
+## 依赖注入与接线（改业务代码前必读）
+
+- **新增/删除业务域的唯一改动点是 `cmd/server/providers.go`**：在 `DomainSet` 加四个 provider，
+  并在 `provideHTTPRegistrars` / `provideGRPCRegistrars` 各加一个形参，然后 `make wire`。
+  `wire.go`、`main.go`、`app.go` **永不改动**（`NewApp` 以切片接收业务域，签名已冻结）。
+- 业务包**不 import** `github.com/google/wire`：接线知识集中在 cmd，业务包保持零 DI 依赖。
+- 构造函数面向接口：`NewRepository(db) Repository` 返回接口（wire 免 `wire.Bind`），
+  `NewService(repo Repository, log)` 形参是接口（单测的唯一替换点）。
+- 跨包共享能力都在 `internal/platform`：`httpx`（编解码/校验/响应/日志）、`errorsx`（错误映射）、
+  `grpcx`（gRPC+gateway 注册）、`aipgorm`（AIP 翻译与列表骨架）。业务包**不要**重复实现。
+- wire 生成物 `cmd/server/wire_gen.go` 必须提交；CI 会做 drift 检查（忘记 `make wire` 会红灯）。
 
 ## AI 规则（CodeBuddy / WorkBuddy）
 
@@ -64,5 +82,5 @@ buf build                                   # 编译契约（IDE 大量报错时
 ## 约定与版本
 
 - package 与目录强一致：`proto/<domain>/<version>/` ↔ `<domain>.<version>`；`go_package` 必填。
-- 新项目复用需替换占位符 `github.com/yourorg/new-td`（全局搜索 `yourorg` 验证为空）。
+- 新项目复用需替换的占位符：module 名 `go-buf-api-template`（`go.mod` 与各 `.proto` 的 `go_package`）、`api/user/v1/user.proto` 的 `java_package = "com.example.gobuf.user.v1"`；改完执行 `grep -rn "com.example.gobuf"` 应无残留。
 - 已验证版本：Buf CLI 1.72.0 · protoc-gen-go v1.36.12 · protoc-gen-go-grpc v1.6.2 · grpc-gateway v2.30.0 · go-grpc-middleware/v2 v2.3.4。

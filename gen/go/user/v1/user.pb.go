@@ -1388,7 +1388,7 @@ const file_user_v1_user_proto_rawDesc = "" +
 	"UpdateUser\x12\x1a.user.v1.UpdateUserRequest\x1a\x1b.user.v1.UpdateUserResponse\"\x1e\x82\xd3\xe4\x93\x02\x18:\x01*2\x13/v1/users/{user_id}\x12b\n" +
 	"\n" +
 	"DeleteUser\x12\x1a.user.v1.DeleteUserRequest\x1a\x1b.user.v1.DeleteUserResponse\"\x1b\x82\xd3\xe4\x93\x02\x15*\x13/v1/users/{user_id}BH\n" +
-	"\x19com.yourorg.newtd.user.v1P\x01Z)go-buf-api-template/gen/go/user/v1;userv1b\x06proto3"
+	"\x19com.example.gobuf.user.v1P\x01Z)go-buf-api-template/gen/go/user/v1;userv1b\x06proto3"
 
 var (
 	file_user_v1_user_proto_rawDescOnce sync.Once

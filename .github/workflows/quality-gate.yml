@@ -78,6 +78,15 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Unit test
+        run: go test ./... -count=1
+
+      - name: Wire drift check
+        run: |
+          go tool wire ./cmd/server
+          git diff --exit-code -- cmd/server/wire_gen.go \
+            || (echo "::error::wire_gen.go 与 wire.go 不同步，请执行 make wire 并提交" && exit 1)
+
       - name: Gofmt
         run: |
           out=$(gofmt -l cmd internal db)

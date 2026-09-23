@@ -8,6 +8,7 @@ package main
 
 import (
 	"go-buf-api-template/internal/conf"
+	"go-buf-api-template/internal/platform/httpx"
 	"go-buf-api-template/internal/platform/logger"
 	"go-buf-api-template/internal/todo"
 	"go-buf-api-template/internal/user"
@@ -18,33 +19,45 @@ import (
 // InitApp 构建应用：返回 App（Gin Engine + gRPC Server）与清理函数。
 func InitApp(cfg *conf.Bootstrap) (*App, func(), error) {
 	log := provideLogConfig(cfg)
-	slogLogger := logger.New(log)
+	slogLogger, cleanup := logger.New(log)
 	database := provideDatabaseConfig(cfg)
-	db, cleanup, err := provideDB(database, slogLogger)
-	if err != nil {
-		return nil, nil, err
-	}
-	service := todo.NewService(db, slogLogger)
-	handler, err := todo.NewHandler(service, slogLogger)
+	db, cleanup2, err := provideDB(database, slogLogger)
 	if err != nil {
 		cleanup()
 		return nil, nil, err
 	}
+	repository := todo.NewRepository(db)
+	service := todo.NewService(repository, slogLogger)
+	v, err := httpx.NewValidator()
+	if err != nil {
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	handler := todo.NewHandler(service, v, slogLogger)
+	userRepository := user.NewRepository(db)
+	userService := user.NewService(userRepository, slogLogger)
+	userHandler := user.NewHandler(userService, v, slogLogger)
+	v2 := provideHTTPRegistrars(handler, userHandler)
 	server := todo.NewServer(service)
-	userService := user.NewService(db, slogLogger)
-	userHandler, err := user.NewHandler(userService, slogLogger)
-	if err != nil {
-		cleanup()
-		return nil, nil, err
-	}
 	userServer := user.NewServer(userService)
-	grpcServer, err := provideGRPCServer(slogLogger)
+	v3 := provideGRPCRegistrars(server, userServer)
+	confServer := provideServerConfig(cfg)
+	httpHandler, err := provideGateway(confServer, v3)
 	if err != nil {
+		cleanup2()
 		cleanup()
 		return nil, nil, err
 	}
-	app := NewApp(cfg, slogLogger, handler, server, userHandler, userServer, grpcServer)
+	grpcServer, err := provideGRPCServer(v, slogLogger)
+	if err != nil {
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	app := NewApp(cfg, slogLogger, v2, v3, httpHandler, grpcServer)
 	return app, func() {
+		cleanup2()
 		cleanup()
 	}, nil
 }

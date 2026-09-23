@@ -22,7 +22,7 @@ flowchart TD
     B --> C{"请求入口"}
     C -- "gRPC :9090" --> D["Unary Interceptor<br/>recovery → protovalidate（§2）"]
     C -- "REST :8081（grpc-gateway）" --> E["反向代理 → gRPC<br/>自动经过同一拦截器（§3）"]
-    C -- "Gin HTTP :8080" --> F["Handler 内 readProto + validateReq（§4）"]
+    C -- "Gin HTTP :8080/api/v1" --> F["Handler 内 httpx.Bind / BindQuery / Validate（§4）"]
     D & E & F --> G["protovalidate 引擎统一执行规则"]
     G -- 违规 --> H["gRPC: InvalidArgument + buf.validate.Violations<br/>Gin: 400 + 同一份违规详情"]
     G -- 通过 --> I["Service 纯业务逻辑<br/>零校验样板代码"]
@@ -162,59 +162,74 @@ REST 请求被反向代理成 gRPC 调用，因此 §2 的拦截器同样覆盖 
 type Handler struct {
 	svc      *Service
 	log      *slog.Logger
-	validate protovalidate.Validator // 进程内单例
+	validate httpx.Validator // wire 注入，进程内共享一份（不再各 Handler 自建）
 }
 
-func NewHandler(svc *Service, log *slog.Logger) (*Handler, error) {
-	v, err := protovalidate.New()
-	if err != nil {
-		return nil, err
-	}
-	return &Handler{svc: svc, log: log, validate: v}, nil
+func NewHandler(svc *Service, validate httpx.Validator, log *slog.Logger) *Handler {
+	return &Handler{svc: svc, log: log, validate: validate}
 }
 
 func (h *Handler) UpdateUser(c *gin.Context) {
 	var req userv1.UpdateUserRequest
 	// 先读 body，再补路径参数，最后统一校验：
-	// 顺序颠倒会让 user_id 的 uuid 规则对空值报错。
-	if !h.readProto(c, &req) {
+	// 顺序颠倒会让 user_id 的 uuid 规则对空值报错（httpx.Bind 的注释有同样提醒）。
+	if !httpx.ReadBody(c, &req) {
 		return
 	}
 	req.UserId = c.Param("user_id")
-	if !h.validateReq(c, &req) {
+	if !httpx.Validate(c, h.validate, &req) {
 		return
 	}
 
 	u, err := h.svc.UpdateUser(c.Request.Context(), &req)
 	if err != nil {
-		h.writeDomainError(c, err)
+		httpx.WriteMapped(c, h.log, err) // 状态码来自 errorsx，handler 不再逐 case 列举
 		return
 	}
-	writeProto(c, http.StatusOK, &userv1.UpdateUserResponse{User: u})
+	httpx.WriteProto(c, http.StatusOK, &userv1.UpdateUserResponse{User: u})
 }
 
-// readProto 只做反序列化（protojson 兼容 snake_case / lowerCamel 与枚举名），不校验。
-func (h *Handler) readProto(c *gin.Context, msg proto.Message) bool { ... }
-
-// validateReq 执行契约中声明的 buf.validate 规则。
-func (h *Handler) validateReq(c *gin.Context, msg proto.Message) bool {
-	if err := h.validate.Validate(msg); err != nil {
-		writeError(c, http.StatusBadRequest, err.Error())
-		return false
+// ListUsers 处理 GET /api/v1/users —— query 绑定交给 httpx.BindQuery
+func (h *Handler) ListUsers(c *gin.Context) {
+	req := &userv1.ListUsersRequest{}
+	if !httpx.BindQuery(c, req) || !httpx.Validate(c, h.validate, req) {
+		return
 	}
-	return true
+	users, next, err := h.svc.ListUsers(c.Request.Context(), req)
+	if err != nil {
+		httpx.WriteMapped(c, h.log, err)
+		return
+	}
+	httpx.WriteProto(c, http.StatusOK, &userv1.ListUsersResponse{Users: users, NextPageToken: next})
 }
 ```
 
-**领域错误 → HTTP 状态码**：
+上面用到的 `httpx.*` 全部来自 `internal/platform/httpx`：
 
-| 领域错误 | HTTP |
+| 函数 | 作用 |
 |---|---|
-| `ErrNotFound` | 404 |
-| `ErrInvalidArgument`（filter / order_by / page_token / update_mask 非法） | 400 |
-| `ErrInvalidCredentials` | 401 |
-| `ErrDuplicateUser` | 409 |
-| 其他 | 500 |
+| `ReadBody` | 只反序列化（protojson，兼容 snake_case / lowerCamel 与枚举名），不校验 |
+| `Validate` | 执行契约中声明的 `buf.validate` 规则 |
+| `Bind` | `ReadBody` + `Validate`，仅用于**无需补路径参数**的场景 |
+| `BindQuery` | query → proto（复用 grpc-gateway 解析器，与 gateway 入口语义一致） |
+| `WriteProto` / `WriteError` | 输出 Proto JSON / `{code,message}` |
+| `WriteMapped` | 领域错误 → 状态码（映射规则由 `errorsx` 在声明处固化） |
+
+**领域错误 → 状态码**：映射不再写在 handler 里，而是在 `internal/platform/errorsx` 的**声明处**固化：
+
+```go
+var (
+	ErrNotFound           = errorsx.New("USER_NOT_FOUND", "user not found", http.StatusNotFound, codes.NotFound)
+	ErrInvalidArgument    = errorsx.New("INVALID_ARGUMENT", "invalid argument", http.StatusBadRequest, codes.InvalidArgument)
+	ErrInvalidCredentials = errorsx.New("USER_INVALID_CREDENTIALS", "invalid username or password",
+		http.StatusUnauthorized, codes.Unauthenticated)
+	ErrDuplicateUser      = errorsx.New("USER_ALREADY_EXISTS", "username or email already exists",
+		http.StatusConflict, codes.AlreadyExists)
+)
+```
+
+gRPC 侧由 `errorsx.UnaryServerInterceptor()` 统一转换（链序 `errorsx → recovery → protovalidate`），
+因此 `server.go` 里每个方法只需要 `return nil, err`。
 
 ---
 
@@ -356,24 +371,21 @@ func (s *Service) ListUsers(ctx context.Context, req *userv1.ListUsersRequest) (
 		return nil, "", fmt.Errorf("%w: invalid page_token", ErrInvalidArgument)
 	}
 
-	q := s.db.WithContext(ctx).Model(&UserPO{})
-	if req.GetShowDeleted() {
-		q = q.Unscoped()
+	q := ListQuery{
+		Offset:         int(pageToken.Offset),
+		Limit:          pageSize + 1, // 多取一条判断是否有下一页
+		Filter:         req.GetFilter(),
+		OrderBy:        req.GetOrderBy(),
+		Keyword:        req.GetKeyword(),
+		IncludeDeleted: req.GetShowDeleted(),
+	}
+	if req.Status != nil {
+		q.Status = proto.Int32(int32(req.GetStatus()))
 	}
 
-	decls, err := filterDeclarations()
+	// AIP-160 过滤 / AIP-132 排序由 Repository 经 aipgorm 翻译成 SQL。
+	rows, err := s.repo.List(ctx, q)
 	if err != nil {
-		return nil, "", fmt.Errorf("%w: build filter declarations", ErrInvalidArgument)
-	}
-	if q, err = aipgorm.ApplyFilter(q, req, decls, querySchema); err != nil {   // AIP-160
-		return nil, "", fmt.Errorf("%w: %s", ErrInvalidArgument, err)
-	}
-	if q, err = aipgorm.ApplyOrderBy(q, req, querySchema, "user_id ASC"); err != nil { // AIP-132
-		return nil, "", fmt.Errorf("%w: %s", ErrInvalidArgument, err)
-	}
-
-	var rows []UserPO
-	if err := q.Offset(int(pageToken.Offset)).Limit(pageSize + 1).Find(&rows).Error; err != nil {
 		return nil, "", err
 	}
 
@@ -440,7 +452,11 @@ q.Where("title = " + title)
 
 ## 8. 单元测试范式
 
-> 本仓库目前**尚无 `*_test.go`**，以下为推荐范式（已按真实 module 路径与真实构造函数修正，可直接落地）。
+> 本仓库已为 `internal/todo`、`internal/user` 提供三层单测：`model_test.go`（转换与三态）、
+> `service_test.go`（fake 注入 `Repository`）、`repository_test.go`（GORM DryRun 断言 SQL）。
+> 运行 `make test` 或 `go test ./internal/...`，**全程无需数据库**。
+
+### 8.1 规则校验（不碰 DB、不碰 Service）
 
 ```go
 package user_test
@@ -487,9 +503,103 @@ func TestUpdateUser_ThreeState(t *testing.T) {
 }
 ```
 
-```bash
-go test -race -count=1 ./...
+### 8.2 Service 层：fake repo 注入（唯一替换点是 `NewService` 的形参）
+
+```go
+// 生产：NewService(NewRepository(db), log)
+// 测试：NewService(fakeRepo, logger.Nop())
+svc := NewService(newFakeRepo(u), logger.Nop())
+_, err := svc.ChangePassword(ctx, &userv1.ChangePasswordRequest{
+	UserId: uid, OldPassword: "Nope1234", NewPassword: "Passw0rd2",
+})
+if !errors.Is(err, ErrPasswordMismatch) {
+	t.Fatalf("err = %v, want ErrPasswordMismatch", err)
+}
 ```
+
+> `fakeRepo` 只需实现 `service.go` 里的 `Repository` 接口（5~7 个方法）。
+> **禁止**绕过构造函数写 `&Service{repo: ...}` —— 那正是改造前被迫的做法。
+
+### 8.3 Repository 层：GORM DryRun 断言 SQL（零外部依赖）
+
+```go
+func newDryRunRepo(t *testing.T) (*repository, *sqlRecorder) {
+	t.Helper()
+	rec := &sqlRecorder{Interface: gormlogger.Default.LogMode(gormlogger.Silent)}
+	db, err := gorm.Open(mysql.New(mysql.Config{
+		DSN:                       "root@tcp(127.0.0.1:3306)/test?parseTime=true&loc=UTC",
+		SkipInitializeWithVersion: true, // 跳过版本探测
+		DefaultStringSize:         256,
+	}), &gorm.Config{
+		DryRun: true,
+		// 这两个必须显式关闭：GORM 默认会在 Open 后 Ping，并给写操作开默认事务，
+		// 两者都会真的建立连接 —— 表现为读操作能跑、写操作报 1045。
+		DisableAutomaticPing:   true,
+		SkipDefaultTransaction: true,
+		Logger:                 rec,
+	})
+	// ...
+	return &repository{db: db}, rec
+}
+
+// sqlRecorder 捕获 DryRun 下生成的 SQL（fc() 内部已做参数插值）
+func (r *sqlRecorder) Trace(_ context.Context, _ time.Time, fc func() (string, int64), _ error) {
+	r.sql, _ = fc()
+}
+```
+
+实测断言示例（可直接照抄）：
+
+```go
+// 软删除过滤（注意 GORM 生成的列名带反引号）
+if !strings.Contains(rec.sql, "`deleted_at` IS NULL") { ... }
+
+// AIP-160 的 `:` → LIKE
+_, _ = repo.List(ctx, ListQuery{Limit: 10, Filter: `title:"bug"`})
+// → ... WHERE title LIKE '%bug%' ...
+
+// 枚举名 → 枚举号
+_, _ = repo.List(ctx, ListQuery{Limit: 10, Filter: `status = "DONE"`})
+// → ... WHERE status = 3 ...
+
+// 未声明字段被拒绝
+_, err := repo.List(ctx, ListQuery{Limit: 10, Filter: `unknown_field = "x"`})
+if !errors.Is(err, ErrInvalidArgument) { ... }
+```
+
+> **DryRun 的已知边界**：零行时 `First` 返回 `error == nil`（不像真库那样返回
+> `ErrRecordNotFound`），因此"驱动错误 → 领域错误"的翻译链路无法用 DryRun 覆盖。
+> 需要覆盖它时，用 `sqlmock` 注入 1062 / sql.ErrNoRows，或引入 testcontainers 起真库。
+
+```bash
+go test -race -count=1 ./...   # 或 make test
+```
+
+---
+
+## 8.4 接线层：如何新增一个业务域
+
+只有 **一个文件** 需要改 —— `cmd/server/providers.go`：
+
+```go
+// 1) DomainSet 加四行
+var DomainSet = wire.NewSet(
+	todo.NewRepository, todo.NewService, todo.NewHandler, todo.NewServer,
+	user.NewRepository, user.NewService, user.NewHandler, user.NewServer,
+	order.NewRepository, order.NewService, order.NewHandler, order.NewServer, // ← 新增
+)
+
+// 2) 注册器聚合各加一个形参 + 一行
+func provideHTTPRegistrars(th *todo.Handler, uh *user.Handler, oh *order.Handler) []httpx.Registrar {
+	return []httpx.Registrar{th, uh, oh}
+}
+func provideGRPCRegistrars(ts *todo.Server, us *user.Server, os *order.Server) []grpcx.Registrar {
+	return []grpcx.Registrar{ts, us, os}
+}
+```
+
+然后 `make wire`。`wire.go` / `main.go` / `app.go` 不用动
+（`NewApp` 以切片接收业务域，签名已冻结；忘记注册会在编译期报类型缺失）。
 
 ---
 
