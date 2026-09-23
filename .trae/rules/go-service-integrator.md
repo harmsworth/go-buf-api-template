@@ -1,0 +1,119 @@
+# Go Service Integrator — 服务层实现规则
+
+> 按需加载：当任务涉及实现 Service 层方法、编写 PO 到 proto 的转换、编写 GORM 查询与游标分页/过滤/排序、实现 gRPC 服务或 Gin Handler 时，先读本文件再动手。
+
+你是 Go 语言微服务工程专家。本项目分工明确：
+
+- **传输层 DTO**：由 `buf` 生成，如 `userv1.User`（`gen/go/user/v1`）、`todov1.Todo`（`gen/go/todo/v1`）。
+- **持久层**：**GORM**（本项目不使用 sqlc），PO 定义在业务包的 `model.go`。
+- **部署形态**：一个进程同时暴露 Gin HTTP、gRPC、grpc-gateway，业务实现只有一份。
+
+## 1. Package by Feature 分层（每个业务包内，五个文件）
+
+| 文件 | 职责 |
+|---|---|
+| `model.go` | GORM PO 结构体 + `ToProto()` 转换 + `applyUpdate()` 三态/FieldMask 更新 |
+| `repository.go` | GORM 查询实现（**只写结构体与方法，不定义接口**），导出 `NewRepository` 返回 `Repository` 接口 |
+| `service.go` | 业务规则；**在此声明 `Repository` 接口**（消费方视角）与领域错误（用 `errorsx.New` 在声明处固化传输层映射） |
+| `handler.go` | Gin Handler：调用 `httpx` 完成编解码/校验/响应，并实现 `RegisterRoutes`（Gin 路由注册） |
+| `server.go` | `xxxv1.XxxServiceServer` 的 gRPC 实现 + 实现 `grpcx.Registrar`（`RegisterGRPC` / `RegisterGateway`） |
+
+跨包共享的 platform 组件（**禁止**在业务包里重复实现）：
+
+| 包 | 职责 | 业务包只调用 |
+|---|---|---|
+| `internal/platform/httpx` | protojson 读写、protovalidate 校验、响应输出、错误落盘、访问日志、`Registrar` 契约 | `httpx.Bind/ReadBody/Validate/WriteProto/WriteError/WriteMapped` |
+| `internal/platform/errorsx` | 领域错误携带 HTTP 状态码与 gRPC code；`UnaryServerInterceptor` 统一转换 | `errorsx.New(...)` 声明错误 |
+| `internal/platform/grpcx` | gRPC 与 grpc-gateway 注册契约 + gateway 构建 | 为 Server 实现 `grpcx.Registrar` |
+| `internal/platform/aipgorm` | AIP 过滤/排序表达式 → GORM 翻译 + `List[T]` 查询骨架 | `aipgorm.List[T]` |
+
+**新增业务域时的接线只有一处**：`cmd/server/providers.go` 的 `DomainSet`（加四个 provider）与该文件的 `provideHTTPRegistrars` / `provideGRPCRegistrars`（各加一个形参）；`wire.go` / `main.go` / `app.go` 永不改动。改完跑 `make wire`。
+
+接口放在 `service.go` 而不是 `repository.go`，是 Go 的 "accept interfaces, return structs" 与"接口定义在消费方"惯例：不为抽象而抽象，只在需要单测替换 / 第二种存储实现时才付出接口成本。
+
+```go
+// repository.go：只有实现（结构体未导出）+ 编译期断言 + 返回接口
+type repository struct{ db *gorm.DB }
+var _ Repository = (*repository)(nil)          // 签名漂移在构建期暴露
+func NewRepository(db *gorm.DB) Repository { return &repository{db: db} }
+func (r *repository) Create(ctx context.Context, m *Todo) error { /* ... */ }
+
+// service.go：消费方声明窄接口
+type Repository interface {
+	Create(ctx context.Context, m *Todo) error
+	// ...
+}
+type Service struct { repo Repository; log *slog.Logger }
+// repo 是唯一可替换点：生产注入 NewRepository(*gorm.DB)，单测注入 fake。
+// 形参必须是接口，**不能**是 *gorm.DB —— 否则替换点被封死在构造函数内部，
+// 测试只能绕过构造函数去写未导出字段。
+func NewService(repo Repository, log *slog.Logger) *Service {
+	return &Service{repo: repo, log: log}
+}
+```
+
+关于 "`return structs`" 惯例的偏离：`NewRepository` 刻意**返回接口**，理由有三——
+① wire 按类型身份求解依赖图，返回接口可免 `wire.Bind`（而 `wire.Bind` 写在 `cmd/server` 时无法引用未导出的 `*repository`）；
+② 可替换点必须落在 `NewService` 的形参上，否则单测无法注入 fake；
+③ 实现类型保持未导出。
+
+参考实现：`internal/todo/`、`internal/user/`（含 `*_test.go` 中的 fake 注入示例）。
+
+## 2. 转换（Converter）规范
+
+- 纯原生、零反射：逐字段显式赋值，命名如 `func (m *UserPO) ToProto() *userv1.User`。
+- 时间用 `timestamppb.New(...)`；可空时间列用 `*time.Time`，`nil` 时保持 proto 的 `optional` 字段为 nil（不落零值，规避 Zero Value Trap）。
+- **严禁把 `password_hash` 等敏感字段映射进 Proto**（黑名单：`password_hash`、`mfa_secret`、`refresh_token_hash`）。
+- 枚举做显式转换：`userv1.UserStatus(m.Status)`；`optional` 枚举字段用 `.Enum()` 取指针。
+
+## 3. Service 规范
+
+- 数据库访问一律走 `s.repo`（GORM 实现在 `repository.go`，`WithContext(ctx)` 在其中封装）；**禁用 `AutoMigrate`**，表结构由 `db/migrations/*.sql` 维护。
+- 校验**不在 Service 里手写**：契约的 `buf.validate` 由 protovalidate 拦截器（gRPC）或 Handler（Gin）执行。
+- List 一律走 AIP 三件套（`go.einride.tech/aip`）：AIP-158 游标分页在 Service 侧完成，AIP-160 过滤 / AIP-132 排序在 Repository 侧由 `aipgorm.List[T]` 骨架统一承载：
+
+```go
+// service.go：分页游标
+pageToken, err := pagination.ParsePageToken(req)
+q := ListQuery{Offset: int(pageToken.Offset), Limit: pageSize + 1, Filter: req.GetFilter(), OrderBy: req.GetOrderBy()}
+
+// repository.go：过滤 → 排序 → 分页 → 查询，一次调用
+rows, err := aipgorm.List[UserPO](r.db.WithContext(ctx).Model(&UserPO{}), q, queryDecls, querySchema, "user_id ASC",
+    func(db *gorm.DB) *gorm.DB { /* 旧字段兼容条件，必须加在 AIP 过滤之前 */ return db })
+```
+
+- 字段白名单（`querySchema`）与类型声明（`queryDecls = aipgorm.MustDeclarations(querySchema)`）是**显式的**：未声明的字段在类型检查阶段就被拒绝（400），不会进 SQL。Schema 是编译期常量，构造失败直接 panic。
+- Update 支持 AIP-134 字段掩码：`fieldmask.Validate(mask, req)` 校验后只写入 mask 声明的字段；未传 mask 时退回 PATCH 三态（nil=不变 / 值=更新 / 空串=清空）。
+- 领域错误用包级变量表达，且**在声明处**固化传输层映射，Handler / Server 不再各自 switch。
+
+## 4. 错误映射（声明处固化，消费方零 switch）
+
+```go
+// service.go 内声明，HTTP 状态码与 gRPC code 一次写清
+var (
+	ErrNotFound        = errorsx.New("TODO_NOT_FOUND", "todo not found", http.StatusNotFound, codes.NotFound)
+	ErrInvalidArgument = errorsx.New("TODO_INVALID_ARGUMENT", "invalid argument",
+		http.StatusBadRequest, codes.InvalidArgument)
+)
+
+// handler.go：一行落盘（状态码由错误自带）
+httpx.WriteMapped(c, h.log, err)
+
+// server.go：直接 return err，由 errorsx.UnaryServerInterceptor 统一转换
+return nil, err
+```
+
+- **禁止**在 handler/server 里写 `switch errors.Is(...)` 式的映射表；新增领域错误只改声明处。
+- 未知错误统一 500 / `codes.Internal`，文案脱敏为 `internal server error`，原始错误只进服务端日志。
+- 需要"同一业务动作在不同 RPC 上有不同语义"时，用**两个哨兵**表达（例如 `ErrInvalidCredentials`（登录 401/Unauthenticated）与 `ErrPasswordMismatch`（改密 400/FailedPrecondition）），而不是在一个哨兵上加特例分支。
+- 仓储层负责把驱动错误翻译成领域错误（如唯一键冲突 → `ErrDuplicateUser`），业务层不得 import 数据库驱动类型。
+
+## 5. 依赖与输出
+
+- 必需：`google.golang.org/protobuf/{proto,encoding/protojson,types/known/timestamppb}`、`google.golang.org/grpc/{codes,status}`、`gorm.io/gorm`、`go.einride.tech/aip/{pagination,filtering,ordering,fieldmask}`。
+- 业务包**不要**直接 import：`buf.build/go/protovalidate`（走 `httpx.Validator`）、`net/http`+`codes` 与 `errorsx` 的映射逻辑（走声明）、`github.com/gin-gonic/gin` 的编解码（走 `httpx`）。
+- 新增字段/表：先改 `.proto` → `buf generate`，再写 `db/migrations/00000N_*.sql`，最后改 PO、Repository 与 Service。
+- 新增查询方法：先加在 `repository.go`，再同步进 `service.go` 的 `Repository` 接口，并补 fake 与单测（`var _ Repository = (*repository)(nil)` 会在构建期校验两者是否对齐）。
+- 单测构造 Service 一律走 `NewService(fakeRepo, logger.Nop())`，**禁止**绕过构造函数写 `&Service{repo: ...}`。
+- 仓储层测试用 **GORM DryRun**（`mysql.New(mysql.Config{SkipInitializeWithVersion: true})` + `gorm.Config{DryRun: true, DisableAutomaticPing: true}`）断言生成的 SQL，零外部依赖；`DisableAutomaticPing` 必须显式关闭，否则 GORM 会在 Open 后真的连库。
+- 输出可直接编译的 Go 代码块 + 极简说明，不输出无关脚手架。
